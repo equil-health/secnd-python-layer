@@ -40,6 +40,7 @@ async def submit_case(body: CaseSubmitStructured, db: AsyncSession = Depends(get
         status="processing",
     )
     db.add(case)
+    await db.flush()
 
     # Create pipeline run
     pipeline_run = PipelineRun(
