@@ -1,11 +1,12 @@
 """Celery configuration — per spec section 6.1."""
 
 from celery import Celery
+from app.config import settings
 
 app = Celery("medsecondopinion")
 app.config_from_object({
-    "broker_url": "redis://localhost:6379/0",
-    "result_backend": "redis://localhost:6379/1",
+    "broker_url": settings.REDIS_URL,
+    "result_backend": settings.REDIS_URL,
     "task_serializer": "json",
     "result_serializer": "json",
     "accept_content": ["json"],
