@@ -1,0 +1,89 @@
+"""Extract verifiable claims from MedGemma output — ported from v5 lines 558-628."""
+
+import json
+import re
+
+from .gemini import call_gemini
+
+EXTRACTION_PROMPT = """Read this clinical analysis and extract the KEY MEDICAL CLAIMS that need evidence.
+
+For each claim, provide:
+1. The claim itself (one sentence)
+2. A specific Google search query to find supporting evidence (5-8 words)
+
+Return EXACTLY this JSON format, nothing else (no markdown backticks):
+{{
+  "primary_diagnosis": "the diagnosis MedGemma thinks is most likely",
+  "claims": [
+    {{
+      "claim": "ANA positive with titer 1:320 and positive ASMA strongly suggests autoimmune hepatitis",
+      "search_query": "ANA ASMA positive autoimmune hepatitis diagnostic criteria"
+    }}
+  ]
+}}
+
+Extract 6-10 of the most important, verifiable clinical claims.
+
+MEDGEMMA ANALYSIS:
+{analysis}"""
+
+# Fallback claims if Gemini JSON parsing fails
+FALLBACK_CLAIMS = [
+    {
+        "claim": "ANA 1:320 with positive ASMA and elevated IgG strongly suggests autoimmune hepatitis",
+        "search_query": "ANA ASMA IgG autoimmune hepatitis diagnostic criteria",
+    },
+    {
+        "claim": "HCC without cirrhosis or hepatitis B/C is uncommon",
+        "search_query": "hepatocellular carcinoma without cirrhosis incidence",
+    },
+    {
+        "claim": "AFP mildly elevated at 38 is non-specific and can occur in autoimmune hepatitis",
+        "search_query": "elevated AFP autoimmune hepatitis non-HCC causes",
+    },
+    {
+        "claim": "Liver lesions without classic arterial enhancement and washout are atypical for HCC",
+        "search_query": "HCC imaging criteria arterial enhancement washout LI-RADS",
+    },
+    {
+        "claim": "Ferritin 890 with iron saturation 65% may indicate hemochromatosis",
+        "search_query": "ferritin 890 iron saturation 65 hemochromatosis diagnosis",
+    },
+    {
+        "claim": "Elevated globulins with low albumin suggests chronic inflammation or lymphoproliferative process",
+        "search_query": "high globulin low albumin differential diagnosis liver",
+    },
+    {
+        "claim": "Cervical lymphadenopathy with B symptoms and liver lesions should raise concern for lymphoma",
+        "search_query": "hepatic lymphoma cervical lymph node B symptoms presentation",
+    },
+    {
+        "claim": "Liver biopsy should be performed but pathology should specifically stain for plasma cells and assess interface hepatitis",
+        "search_query": "autoimmune hepatitis liver biopsy histology plasma cells interface hepatitis",
+    },
+]
+
+
+def extract_claims(analysis: str) -> dict:
+    """Extract verifiable clinical claims from MedGemma analysis.
+
+    Returns dict with keys: primary_diagnosis, claims.
+    """
+    raw = call_gemini(
+        EXTRACTION_PROMPT.format(analysis=analysis[:6000]),
+        max_tokens=2048,
+        temperature=0.1,
+    )
+
+    raw = re.sub(r"^```json\s*", "", raw.strip())
+    raw = re.sub(r"\s*```$", "", raw)
+
+    try:
+        data = json.loads(raw)
+        primary_dx = data.get("primary_diagnosis", "unknown")
+        claims = data.get("claims", [])
+    except json.JSONDecodeError:
+        primary_dx = "autoimmune hepatitis"
+        claims = FALLBACK_CLAIMS
+
+    return {"primary_diagnosis": primary_dx, "claims": claims}

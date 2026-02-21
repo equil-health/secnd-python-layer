@@ -1,0 +1,28 @@
+"""Celery configuration — per spec section 6.1."""
+
+from celery import Celery
+
+app = Celery("medsecondopinion")
+app.config_from_object({
+    "broker_url": "redis://localhost:6379/0",
+    "result_backend": "redis://localhost:6379/1",
+    "task_serializer": "json",
+    "result_serializer": "json",
+    "accept_content": ["json"],
+    "task_track_started": True,
+    "task_time_limit": 300,
+    "task_soft_time_limit": 240,
+    "task_routes": {
+        "pipeline.analyze_case": {"queue": "medgemma_q"},
+        "pipeline.clean_output": {"queue": "report_q"},
+        "pipeline.validate_claims": {"queue": "gemini_q"},
+        "pipeline.extract_claims": {"queue": "gemini_q"},
+        "pipeline.search_evidence": {"queue": "search_q"},
+        "pipeline.synthesize_evidence": {"queue": "gemini_q"},
+        "pipeline.storm_research": {"queue": "storm_q"},
+        "pipeline.compile_report": {"queue": "report_q"},
+    },
+})
+
+# Auto-discover tasks
+app.autodiscover_tasks(["app.pipeline"])

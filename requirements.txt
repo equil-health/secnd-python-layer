@@ -1,0 +1,16 @@
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+sqlalchemy[asyncio]>=2.0.25
+asyncpg>=0.29.0
+psycopg2-binary>=2.9.9
+alembic>=1.13.0
+celery[redis]>=5.3.6
+redis>=5.0.0
+pydantic-settings>=2.1.0
+requests>=2.31.0
+google-auth>=2.27.0
+knowledge-storm>=0.2.0
+litellm>=1.20.0
+weasyprint>=60.0
+python-docx>=1.1.0
+markdown>=3.5.0

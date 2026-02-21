@@ -1,0 +1,66 @@
+"""MedGemma API client — ported from v5 lines 175-205."""
+
+import time
+import requests
+from google.oauth2 import service_account
+import google.auth.transport.requests as google_requests
+
+from ..config import settings
+
+_credentials = None
+
+
+def _get_credentials():
+    """Get or refresh GCP credentials."""
+    global _credentials
+    if _credentials is None or _credentials.expired:
+        _credentials = service_account.Credentials.from_service_account_file(
+            settings.GCP_SERVICE_ACCOUNT_FILE,
+            scopes=["https://www.googleapis.com/auth/cloud-platform"],
+        )
+        _credentials.refresh(google_requests.Request())
+    return _credentials
+
+
+def call_medgemma(prompt: str, max_tokens: int = 4096, temperature: float = 0.3) -> str:
+    """Call MedGemma on Vertex AI dedicated endpoint.
+
+    3 retries with exponential backoff. Parses "Output:" prefix if present.
+    """
+    creds = _get_credentials()
+    headers = {
+        "Authorization": f"Bearer {creds.token}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "instances": [{
+            "prompt": prompt,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "top_p": 0.95,
+        }]
+    }
+
+    for attempt in range(3):
+        try:
+            resp = requests.post(
+                settings.MEDGEMMA_PREDICT_URL,
+                json=payload,
+                headers=headers,
+                timeout=180,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if "predictions" in data and data["predictions"]:
+                    raw = data["predictions"][0]
+                    if isinstance(raw, str) and "Output:" in raw:
+                        return raw.split("Output:", 1)[1].strip()
+                    elif isinstance(raw, str):
+                        return raw.strip()
+                return str(data)
+        except Exception:
+            pass
+        if attempt < 2:
+            time.sleep(2 ** attempt)
+
+    raise RuntimeError("MedGemma failed after 3 attempts")
