@@ -1,10 +1,11 @@
-"""HTML to PDF via weasyprint."""
+"""HTML to PDF via xhtml2pdf (no system dependencies needed)."""
 
-from weasyprint import HTML
+import io
+from xhtml2pdf import pisa
 
 REPORT_CSS = """
 body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-family: Helvetica, Arial, sans-serif;
     max-width: 700px;
     margin: 0 auto;
     padding: 2rem;
@@ -26,4 +27,6 @@ def html_to_pdf(html_content: str) -> bytes:
 <style>{REPORT_CSS}</style>
 </head><body>{html_content}</body></html>"""
 
-    return HTML(string=full_html).write_pdf()
+    buffer = io.BytesIO()
+    pisa.CreatePDF(io.StringIO(full_html), dest=buffer)
+    return buffer.getvalue()
