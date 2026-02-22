@@ -14,6 +14,7 @@ class Settings(BaseSettings):
 
     # External APIs
     SERPER_API_KEY: str = ""
+    HF_TOKEN: str = ""
 
     # Infrastructure
     DATABASE_URL: str = ""
