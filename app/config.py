@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     STORM_SEARCH_TOP_K: int = 20
     PIPELINE_TIMEOUT_SECONDS: int = 300
 
+    # MedASR
+    MEDASR_MODEL: str = "google/medasr"
+    MEDASR_CHUNK_SECONDS: int = 90
+
     # File uploads
     UPLOAD_DIR: str = "./uploads"
     MAX_UPLOAD_SIZE_MB: int = 50

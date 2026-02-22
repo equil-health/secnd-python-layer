@@ -11,6 +11,7 @@ from .api.routes_cases import router as cases_router
 from .api.routes_reports import router as reports_router
 from .api.routes_upload import router as upload_router
 from .api.routes_research import router as research_router
+from .api.routes_audio import router as audio_router
 from .api.websocket import ws_pipeline_status
 
 
@@ -43,6 +44,7 @@ app.include_router(cases_router)
 app.include_router(reports_router)
 app.include_router(upload_router)
 app.include_router(research_router)
+app.include_router(audio_router)
 
 # WebSocket
 app.websocket("/ws/cases/{case_id}/status")(ws_pipeline_status)
