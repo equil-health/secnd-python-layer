@@ -31,7 +31,35 @@ async def get_report(case_id: UUID, db: AsyncSession = Depends(get_db)):
     if not report:
         raise HTTPException(status_code=404, detail="Report not found")
 
-    # Parse evidence claims from stored data
+    # Look up the case to check pipeline type
+    case_result = await db.execute(
+        select(Case).where(Case.id == case_id)
+    )
+    case = case_result.scalar_one_or_none()
+    pipeline_type = case.pipeline_type if case else "diagnosis"
+
+    if pipeline_type == "research":
+        # Research pipeline: no MedGemma, no evidence claims
+        references = [Reference(**r) for r in (report.references or [])]
+        return ReportResponse(
+            case_id=report.case_id,
+            pipeline_type="research",
+            research_topic=case.research_topic if case else None,
+            executive_summary=report.executive_summary,
+            medgemma_analysis=None,
+            evidence_claims=[],
+            storm_article=report.storm_article_clean,
+            references=references,
+            primary_diagnosis=None,
+            total_sources=report.total_sources or 0,
+            hallucination_issues=0,
+            report_html=report.report_html,
+            pdf_url=f"/api/cases/{case_id}/report/pdf" if report.report_markdown else None,
+            docx_url=f"/api/cases/{case_id}/report/docx" if report.report_markdown else None,
+            created_at=report.created_at,
+        )
+
+    # Diagnosis pipeline (original logic)
     evidence_claims = []
     for claim_data in (report.evidence_results or []):
         evidence_claims.append(EvidenceClaim(
@@ -41,7 +69,6 @@ async def get_report(case_id: UUID, db: AsyncSession = Depends(get_db)):
             references=claim_data.get("references", []),
         ))
 
-    # Parse references
     references = [Reference(**r) for r in (report.references or [])]
 
     hallucination_issues = 0
@@ -50,6 +77,7 @@ async def get_report(case_id: UUID, db: AsyncSession = Depends(get_db)):
 
     return ReportResponse(
         case_id=report.case_id,
+        pipeline_type="diagnosis",
         executive_summary=report.executive_summary,
         medgemma_analysis=report.medgemma_clean or "",
         evidence_claims=evidence_claims,

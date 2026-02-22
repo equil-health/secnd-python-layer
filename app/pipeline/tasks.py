@@ -504,3 +504,199 @@ def compile_report(self, prev_result, case_id: str):
         return {"report_length": len(compiled["report_markdown"])}
     finally:
         session.close()
+
+
+# ============================================================
+# Research Pipeline (lighter: 4 steps)
+# ============================================================
+
+def dispatch_research_pipeline(case_id: str):
+    """Start the research pipeline as a Celery chain."""
+    pipeline = chain(
+        research_generate_questions.s(None, case_id),
+        research_storm.s(case_id),
+        research_compile_report.s(case_id),
+    )
+    pipeline.apply_async()
+
+
+@app.task(bind=True, name="pipeline.research_generate_questions")
+def research_generate_questions(self, prev_result, case_id: str):
+    """Step 2: Gemini generates research questions + refined topic."""
+    broadcast(case_id, {
+        "type": "step_update", "step": 2,
+        "label": "Generating research questions...", "status": "running",
+    })
+
+    from .gemini import call_gemini
+    from ..models.case import Case
+
+    session = _get_sync_session()
+    try:
+        case = session.query(Case).filter_by(id=case_id).first()
+        topic = case.research_topic or ""
+        context = case.raw_case_text or ""
+
+        prompt = f"""You are a research assistant. Given the following research topic, generate:
+1. A refined, specific topic suitable for deep literature research (1 sentence)
+2. 5-7 focused research questions that would comprehensively explore this topic
+
+Topic: {topic}
+{f"Additional context: {context}" if context else ""}
+
+Return JSON only:
+{{
+    "refined_topic": "...",
+    "questions": ["question 1", "question 2", ...]
+}}"""
+
+        start = time.time()
+        import json as _json
+        import re as _re
+
+        raw = call_gemini(prompt, max_tokens=1024, temperature=0.4)
+        raw = _re.sub(r"^```json\s*", "", raw.strip())
+        raw = _re.sub(r"\s*```$", "", raw)
+
+        try:
+            data = _json.loads(raw)
+        except _json.JSONDecodeError:
+            data = {"refined_topic": topic, "questions": []}
+
+        duration = time.time() - start
+
+        report = _get_or_create_report(session, case_id)
+        report.extracted_claims = data
+        session.commit()
+
+        questions = data.get("questions", [])
+        broadcast(case_id, {
+            "type": "step_update", "step": 2,
+            "label": "Generating research questions...", "status": "done",
+            "duration_s": round(duration, 1),
+            "preview": f"{len(questions)} research questions generated",
+        })
+
+        return {"refined_topic": data.get("refined_topic", topic), "questions": questions}
+    finally:
+        session.close()
+
+
+@app.task(bind=True, name="pipeline.research_storm")
+def research_storm(self, prev_result, case_id: str):
+    """Step 3: STORM deep research on the topic."""
+    broadcast(case_id, {
+        "type": "step_update", "step": 3,
+        "label": "STORM deep research...", "status": "running",
+    })
+
+    from .storm_runner import run_storm
+    from ..models.report import Report
+
+    session = _get_sync_session()
+    try:
+        refined_topic = prev_result.get("refined_topic", "research topic") if prev_result else "research topic"
+        output_dir = tempfile.mkdtemp(prefix="storm_research_")
+
+        start = time.time()
+        result = run_storm(topic=refined_topic, output_dir=output_dir)
+        duration = time.time() - start
+
+        report = session.query(Report).filter_by(case_id=case_id).first()
+        if report:
+            report.storm_article_raw = result["article"]
+            report.storm_url_to_info = result["url_to_info"]
+            session.commit()
+
+        if result["error"]:
+            broadcast(case_id, {
+                "type": "step_update", "step": 3,
+                "label": "STORM deep research...", "status": "done",
+                "duration_s": round(duration, 1),
+                "preview": f"Completed with warning: {result['error'][:80]}",
+            })
+        else:
+            broadcast(case_id, {
+                "type": "step_update", "step": 3,
+                "label": "STORM deep research...", "status": "done",
+                "duration_s": round(duration, 1),
+                "preview": f"Article: {len(result['article'] or '')} chars",
+            })
+
+        return {"storm_length": len(result["article"] or ""), "refined_topic": refined_topic}
+    finally:
+        session.close()
+
+
+@app.task(bind=True, name="pipeline.research_compile_report")
+def research_compile_report(self, prev_result, case_id: str):
+    """Step 4: Compile research report with executive summary."""
+    broadcast(case_id, {
+        "type": "step_update", "step": 4,
+        "label": "Compiling research report...", "status": "running",
+    })
+
+    from .gemini import call_gemini
+    from ..postprocess.research_report_compiler import compile_research_report
+    from ..models.report import Report
+    from ..models.case import Case
+
+    session = _get_sync_session()
+    try:
+        report = session.query(Report).filter_by(case_id=case_id).first()
+        case = session.query(Case).filter_by(id=case_id).first()
+
+        research_topic = case.research_topic or "Research Topic"
+        research_data = report.extracted_claims or {}
+        questions = research_data.get("questions", [])
+        storm_article = report.storm_article_raw or ""
+
+        # Generate executive summary via Gemini
+        summary_prompt = f"""Write a concise executive summary (3-5 sentences) for a research report on the following topic.
+Focus on key findings and conclusions.
+
+Topic: {research_topic}
+
+Article excerpt (first 3000 chars):
+{storm_article[:3000]}
+
+Executive summary:"""
+
+        start = time.time()
+        exec_summary = call_gemini(summary_prompt, max_tokens=512, temperature=0.3)
+
+        compiled = compile_research_report(
+            research_topic=research_topic,
+            research_questions=questions,
+            storm_article=storm_article,
+            storm_url_to_info=report.storm_url_to_info,
+            executive_summary=exec_summary,
+        )
+        duration = time.time() - start
+
+        report.report_markdown = compiled["report_markdown"]
+        report.report_html = compiled["report_html"]
+        report.references = compiled["references"]
+        report.executive_summary = compiled["executive_summary"]
+        report.total_sources = compiled["total_sources"]
+        report.storm_article_clean = compiled["storm_article_clean"]
+
+        case.status = "completed"
+        session.commit()
+
+        broadcast(case_id, {
+            "type": "step_update", "step": 4,
+            "label": "Compiling research report...", "status": "done",
+            "duration_s": round(duration, 1),
+        })
+
+        broadcast(case_id, {
+            "type": "complete",
+            "report_url": f"/api/cases/{case_id}/report",
+            "total_sources": compiled["total_sources"],
+            "executive_summary": exec_summary[:200],
+        })
+
+        return {"report_length": len(compiled["report_markdown"])}
+    finally:
+        session.close()

@@ -32,6 +32,11 @@ class CaseSubmitFreeText(BaseModel):
     raw_text: str = Field(min_length=50)
 
 
+class ResearchSubmit(BaseModel):
+    research_topic: str = Field(min_length=10)
+    additional_context: Optional[str] = None
+
+
 class FollowUpRequest(BaseModel):
     question: str = Field(min_length=5)
 
@@ -41,6 +46,7 @@ class FollowUpRequest(BaseModel):
 class CaseResponse(BaseModel):
     id: UUID
     status: str
+    pipeline_type: Optional[str] = "diagnosis"
     created_at: datetime
     presenting_complaint: Optional[str] = None
     referring_diagnosis: Optional[str] = None
@@ -85,14 +91,16 @@ class Reference(BaseModel):
 
 class ReportResponse(BaseModel):
     case_id: UUID
+    pipeline_type: Optional[str] = "diagnosis"
+    research_topic: Optional[str] = None
     executive_summary: Optional[str] = None
-    medgemma_analysis: str
-    evidence_claims: list[EvidenceClaim]
+    medgemma_analysis: Optional[str] = None
+    evidence_claims: list[EvidenceClaim] = []
     storm_article: Optional[str] = None
-    references: list[Reference]
+    references: list[Reference] = []
     primary_diagnosis: Optional[str] = None
-    total_sources: int
-    hallucination_issues: int
+    total_sources: int = 0
+    hallucination_issues: int = 0
     report_html: Optional[str] = None
     pdf_url: Optional[str] = None
     docx_url: Optional[str] = None
@@ -108,6 +116,7 @@ class FollowUpResponse(BaseModel):
 class CaseListItem(BaseModel):
     id: UUID
     status: str
+    pipeline_type: Optional[str] = "diagnosis"
     presenting_complaint: str
     primary_diagnosis: Optional[str] = None
     created_at: datetime

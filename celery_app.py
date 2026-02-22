@@ -22,6 +22,10 @@ app.config_from_object({
         "pipeline.synthesize_evidence": {"queue": "gemini_q"},
         "pipeline.storm_research": {"queue": "storm_q"},
         "pipeline.compile_report": {"queue": "report_q"},
+        # Research pipeline
+        "pipeline.research_generate_questions": {"queue": "gemini_q"},
+        "pipeline.research_storm": {"queue": "storm_q"},
+        "pipeline.research_compile_report": {"queue": "report_q"},
     },
 })
 
