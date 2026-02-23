@@ -19,8 +19,10 @@ app.config_from_object({
         "pipeline.validate_claims": {"queue": "gemini_q"},
         "pipeline.extract_claims": {"queue": "gemini_q"},
         "pipeline.search_evidence": {"queue": "search_q"},
+        "pipeline.verify_citations": {"queue": "search_q"},
         "pipeline.synthesize_evidence": {"queue": "gemini_q"},
         "pipeline.storm_research": {"queue": "storm_q"},
+        "pipeline.verify_storm_citations": {"queue": "search_q"},
         "pipeline.compile_report": {"queue": "report_q"},
         # Research pipeline
         "pipeline.research_generate_questions": {"queue": "gemini_q"},
