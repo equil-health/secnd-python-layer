@@ -11,8 +11,10 @@ _redis = redis.Redis.from_url(settings.REDIS_URL)
 CACHE_TTL = 86400  # 24 hours
 
 
-def search_serper(query: str, num_results: int = 5) -> list[dict]:
+def search_serper(query: str, num_results: int = 5, query_suffix: str = "") -> list[dict]:
     """Search via Serper.dev API with Redis caching (24h TTL)."""
+    if query_suffix:
+        query = f"{query} {query_suffix}"
     # Check cache
     cache_key = f"search_cache:{hashlib.md5(query.encode()).hexdigest()}"
     try:

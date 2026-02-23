@@ -5,6 +5,45 @@ import re
 
 from .gemini import call_gemini
 
+ZEBRA_EXTRACTION_PROMPT = """Read this clinical analysis focusing on RARE DISEASE (zebra) hypotheses.
+
+The analysis should contain:
+- Common diagnoses that were considered and excluded ("horses")
+- Rare disease hypotheses ("zebras") that better fit the clinical picture
+
+Extract:
+1. The common diagnoses that were excluded, with brief reasons
+2. The rare/zebra hypotheses as verifiable claims
+3. Search queries targeting rare disease databases (Orphanet, OMIM, NIH GARD)
+
+Return EXACTLY this JSON format, nothing else (no markdown backticks):
+{{
+  "primary_diagnosis": "the most likely rare diagnosis from the zebra analysis",
+  "excluded_common": [
+    {{
+      "diagnosis": "the common diagnosis that was excluded",
+      "reason": "why it was excluded based on the clinical evidence"
+    }}
+  ],
+  "zebra_hypotheses": [
+    {{
+      "hypothesis": "the rare disease hypothesis",
+      "key_features": "clinical features that support this hypothesis"
+    }}
+  ],
+  "claims": [
+    {{
+      "claim": "specific verifiable claim about the rare disease hypothesis",
+      "search_query": "rare disease name diagnostic criteria Orphanet"
+    }}
+  ]
+}}
+
+Extract 6-10 of the most important, verifiable claims focusing on the rare disease hypotheses.
+
+ZEBRA ANALYSIS:
+{analysis}"""
+
 EXTRACTION_PROMPT = """Read this clinical analysis and extract the KEY MEDICAL CLAIMS that need evidence.
 
 For each claim, provide:
@@ -64,13 +103,15 @@ FALLBACK_CLAIMS = [
 ]
 
 
-def extract_claims(analysis: str) -> dict:
+def extract_claims(analysis: str, mode: str = "standard") -> dict:
     """Extract verifiable clinical claims from MedGemma analysis.
 
     Returns dict with keys: primary_diagnosis, claims.
+    When mode="zebra", also returns: excluded_common, zebra_hypotheses.
     """
+    prompt_template = ZEBRA_EXTRACTION_PROMPT if mode == "zebra" else EXTRACTION_PROMPT
     raw = call_gemini(
-        EXTRACTION_PROMPT.format(analysis=analysis[:6000]),
+        prompt_template.format(analysis=analysis[:6000]),
         max_tokens=2048,
         temperature=0.1,
     )
@@ -85,5 +126,10 @@ def extract_claims(analysis: str) -> dict:
     except json.JSONDecodeError:
         primary_dx = "autoimmune hepatitis"
         claims = FALLBACK_CLAIMS
+        data = {}
 
-    return {"primary_diagnosis": primary_dx, "claims": claims}
+    result = {"primary_diagnosis": primary_dx, "claims": claims}
+    if mode == "zebra":
+        result["excluded_common"] = data.get("excluded_common", [])
+        result["zebra_hypotheses"] = data.get("zebra_hypotheses", [])
+    return result

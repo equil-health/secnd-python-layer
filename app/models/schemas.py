@@ -26,10 +26,12 @@ class CaseSubmitStructured(BaseModel):
     imaging_reports: Optional[str] = None
     referring_diagnosis: Optional[str] = None
     specific_question: Optional[str] = None
+    mode: Optional[str] = "standard"  # "standard" or "zebra"
 
 
 class CaseSubmitFreeText(BaseModel):
     raw_text: str = Field(min_length=50)
+    mode: Optional[str] = "standard"  # "standard" or "zebra"
 
 
 class ResearchSubmit(BaseModel):
@@ -47,6 +49,7 @@ class CaseResponse(BaseModel):
     id: UUID
     status: str
     pipeline_type: Optional[str] = "diagnosis"
+    diagnosis_mode: Optional[str] = "standard"
     created_at: datetime
     presenting_complaint: Optional[str] = None
     referring_diagnosis: Optional[str] = None
@@ -92,6 +95,7 @@ class Reference(BaseModel):
 class ReportResponse(BaseModel):
     case_id: UUID
     pipeline_type: Optional[str] = "diagnosis"
+    diagnosis_mode: Optional[str] = "standard"
     research_topic: Optional[str] = None
     executive_summary: Optional[str] = None
     medgemma_analysis: Optional[str] = None
@@ -117,6 +121,7 @@ class CaseListItem(BaseModel):
     id: UUID
     status: str
     pipeline_type: Optional[str] = "diagnosis"
+    diagnosis_mode: Optional[str] = "standard"
     presenting_complaint: str
     primary_diagnosis: Optional[str] = None
     created_at: datetime

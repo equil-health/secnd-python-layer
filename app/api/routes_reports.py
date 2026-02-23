@@ -37,6 +37,7 @@ async def get_report(case_id: UUID, db: AsyncSession = Depends(get_db)):
     )
     case = case_result.scalar_one_or_none()
     pipeline_type = case.pipeline_type if case else "diagnosis"
+    diagnosis_mode = case.diagnosis_mode if case else "standard"
 
     if pipeline_type == "research":
         # Research pipeline: no MedGemma, no evidence claims
@@ -44,6 +45,7 @@ async def get_report(case_id: UUID, db: AsyncSession = Depends(get_db)):
         return ReportResponse(
             case_id=report.case_id,
             pipeline_type="research",
+            diagnosis_mode="standard",
             research_topic=case.research_topic if case else None,
             executive_summary=report.executive_summary,
             medgemma_analysis=None,
@@ -78,6 +80,7 @@ async def get_report(case_id: UUID, db: AsyncSession = Depends(get_db)):
     return ReportResponse(
         case_id=report.case_id,
         pipeline_type="diagnosis",
+        diagnosis_mode=diagnosis_mode or "standard",
         executive_summary=report.executive_summary,
         medgemma_analysis=report.medgemma_clean or "",
         evidence_claims=evidence_claims,

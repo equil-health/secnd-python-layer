@@ -25,6 +25,7 @@ router = APIRouter(prefix="/api/cases", tags=["cases"])
 @router.post("", status_code=201, response_model=CaseResponse)
 async def submit_case(body: CaseSubmitStructured, db: AsyncSession = Depends(get_db)):
     """POST /api/cases — Submit a structured case for analysis."""
+    mode = body.mode or "standard"
     case = Case(
         patient_age=body.patient_age,
         patient_sex=body.patient_sex,
@@ -37,6 +38,7 @@ async def submit_case(body: CaseSubmitStructured, db: AsyncSession = Depends(get
         imaging_reports=body.imaging_reports,
         referring_diagnosis=body.referring_diagnosis,
         specific_question=body.specific_question,
+        diagnosis_mode=mode,
         status="processing",
     )
     db.add(case)
@@ -166,6 +168,7 @@ async def list_cases(
             CaseListItem(
                 id=c.id,
                 status=c.status,
+                diagnosis_mode=c.diagnosis_mode or "standard",
                 presenting_complaint=(c.presenting_complaint or "")[:100],
                 primary_diagnosis=None,
                 created_at=c.created_at,

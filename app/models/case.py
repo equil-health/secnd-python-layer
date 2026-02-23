@@ -29,6 +29,7 @@ class Case(Base):
 
     # Pipeline discriminator
     pipeline_type = Column(String(20), default="diagnosis")
+    diagnosis_mode = Column(String(20), default="standard")  # "standard" or "zebra"
     research_topic = Column(Text)
 
     # Status

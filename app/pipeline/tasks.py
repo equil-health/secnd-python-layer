@@ -37,9 +37,8 @@ def dispatch_pipeline(case_id: str):
     pipeline.apply_async()
 
 
-def _build_medgemma_prompt(case) -> str:
-    """Build the MedGemma second-opinion analysis prompt from a Case model."""
-    # Build case text from structured fields or raw text
+def _build_case_text(case) -> str:
+    """Build case text from structured fields or raw text (shared helper)."""
     case_text = case.raw_case_text or ""
     if not case_text:
         parts = []
@@ -68,6 +67,12 @@ def _build_medgemma_prompt(case) -> str:
         if case.specific_question:
             parts.append(f"Key Question: {case.specific_question}")
         case_text = "\n\n".join(parts)
+    return case_text
+
+
+def _build_medgemma_prompt(case) -> str:
+    """Build the MedGemma second-opinion analysis prompt from a Case model."""
+    case_text = _build_case_text(case)
 
     return f"""You are a senior specialist providing a second opinion. A referring physician has made a diagnosis and the patient seeks a second opinion.
 
@@ -100,6 +105,64 @@ CLINICAL CASE:
 {case_text}
 
 SECOND OPINION ANALYSIS:"""
+
+
+def _build_zebra_prompt(case) -> str:
+    """Build the MedGemma zebra-mode prompt for rare disease differential."""
+    case_text = _build_case_text(case)
+
+    return f"""You are a senior specialist with expertise in rare and uncommon diseases. A referring physician has made a diagnosis, but the patient's presentation has atypical features that may suggest a rarer condition.
+
+Your task is to THINK ZEBRA — go beyond the obvious "horses" (common diagnoses) and consider "zebras" (rare diseases) that could explain the clinical picture.
+
+IMPORTANT: Only recommend tests, antibodies, and scoring systems that are REAL and WIDELY USED in clinical practice. Do NOT invent or guess test names.
+
+Structure your analysis:
+
+1. CASE SUMMARY: Key clinical findings in brief.
+
+2. COMMON DIAGNOSES CONSIDERED AND EXCLUDED (HORSES):
+   List the 2-3 most likely common diagnoses. For each, explain which specific findings ARGUE AGAINST it.
+
+3. ZEBRA HYPOTHESES (rare disease candidates, ranked by fit):
+   For each rare condition:
+   - Name and brief description
+   - Orphanet/OMIM ID if known
+   - Estimated prevalence
+   - Which specific findings in THIS patient support it
+   - Which findings argue against it
+   - Confirmatory tests needed
+
+4. PATTERN RECOGNITION:
+   What combination of findings makes this case unusual? What "red flags" for rare disease are present?
+
+5. RECOMMENDED DIAGNOSTIC PATHWAY:
+   - Step-by-step workup to differentiate between zebra hypotheses
+   - Genetic testing if applicable
+   - Specialist referrals needed
+   - Timeline urgency
+
+6. PATIENT COMMUNICATION:
+   How to explain to the patient that a rare condition is being investigated.
+
+FEW-SHOT EXAMPLE:
+A 28-year-old female with recurrent deep vein thrombosis, livedo reticularis, and recurrent miscarriages was referred with "hypercoagulable state — consider Factor V Leiden."
+- HORSE EXCLUDED: Factor V Leiden — does not explain livedo reticularis or miscarriages together
+- HORSE EXCLUDED: Protein C/S deficiency — does not explain the skin findings
+- ZEBRA HYPOTHESIS 1: Antiphospholipid Syndrome (APS) — Orphanet 464, prevalence ~1:2000. The triad of thrombosis + livedo + pregnancy loss is classic. Confirm with anticardiolipin antibodies, lupus anticoagulant, anti-beta2 glycoprotein I.
+- ZEBRA HYPOTHESIS 2: Sneddon Syndrome — rare variant with livedo + stroke risk, if CNS symptoms emerge.
+
+CLINICAL CASE:
+{case_text}
+
+THINK ZEBRA — RARE DISEASE ANALYSIS:"""
+
+
+def _get_search_suffix(mode: str) -> str:
+    """Return search query suffix for rare disease site filtering in zebra mode."""
+    if mode == "zebra":
+        return "site:orpha.net OR site:rarediseases.info.nih.gov OR site:rarediseases.org OR site:omim.org"
+    return ""
 
 
 def _extract_preview(text: str, max_len: int = 100) -> str:
@@ -138,18 +201,21 @@ def _get_or_create_report(session, case_id: str):
 @app.task(bind=True, name="pipeline.analyze_case")
 def analyze_case(self, prev_result, case_id: str):
     """Step 2: MedGemma clinical analysis."""
-    broadcast(case_id, {
-        "type": "step_update", "step": 2,
-        "label": "MedGemma analyzing case...", "status": "running",
-    })
-
     from .medgemma import call_medgemma
     from ..models.case import Case
 
     session = _get_sync_session()
     try:
         case = session.query(Case).filter_by(id=case_id).first()
-        prompt = _build_medgemma_prompt(case)
+        mode = case.diagnosis_mode or "standard"
+
+        label = "MedGemma analyzing case (Zebra mode)..." if mode == "zebra" else "MedGemma analyzing case..."
+        broadcast(case_id, {
+            "type": "step_update", "step": 2,
+            "label": label, "status": "running",
+        })
+
+        prompt = _build_zebra_prompt(case) if mode == "zebra" else _build_medgemma_prompt(case)
 
         start = time.time()
         raw_analysis = call_medgemma(prompt, max_tokens=settings.MEDGEMMA_MAX_TOKENS)
@@ -259,16 +325,23 @@ def extract_claims_task(self, prev_result, case_id: str):
 
     from .claim_extractor import extract_claims
     from ..models.report import Report
+    from ..models.case import Case
 
     session = _get_sync_session()
     try:
         report = session.query(Report).filter_by(case_id=case_id).first()
+        case = session.query(Case).filter_by(id=case_id).first()
+        mode = case.diagnosis_mode or "standard"
 
         start = time.time()
-        claims_data = extract_claims(report.medgemma_clean)
+        claims_data = extract_claims(report.medgemma_clean, mode=mode)
         duration = time.time() - start
 
-        report.extracted_claims = claims_data["claims"]
+        if mode == "zebra":
+            # Store full dict so compile_report can access excluded_common/zebra_hypotheses
+            report.extracted_claims = claims_data
+        else:
+            report.extracted_claims = claims_data["claims"]
         report.primary_diagnosis = claims_data["primary_diagnosis"]
         session.commit()
 
@@ -295,11 +368,17 @@ def search_evidence(self, prev_result, case_id: str):
 
     from .serper import search_serper
     from ..models.report import Report
+    from ..models.case import Case
 
     session = _get_sync_session()
     try:
         report = session.query(Report).filter_by(case_id=case_id).first()
-        claims = report.extracted_claims or []
+        case = session.query(Case).filter_by(id=case_id).first()
+        mode = case.diagnosis_mode or "standard"
+        search_suffix = _get_search_suffix(mode)
+        raw_claims = report.extracted_claims or []
+        # In zebra mode, extracted_claims is a dict with a "claims" key
+        claims = raw_claims.get("claims", []) if isinstance(raw_claims, dict) else raw_claims
 
         start = time.time()
         all_refs = []
@@ -316,7 +395,7 @@ def search_evidence(self, prev_result, case_id: str):
             if not query:
                 continue
 
-            results = search_serper(query, num_results=settings.SERPER_RESULTS_PER_QUERY)
+            results = search_serper(query, num_results=settings.SERPER_RESULTS_PER_QUERY, query_suffix=search_suffix)
 
             claim_refs = []
             for r in results:
@@ -400,14 +479,22 @@ def storm_research(self, prev_result, case_id: str):
 
     from .storm_runner import run_storm
     from ..models.report import Report
+    from ..models.case import Case
 
     session = _get_sync_session()
     try:
         report = session.query(Report).filter_by(case_id=case_id).first()
+        case = session.query(Case).filter_by(id=case_id).first()
+        mode = case.diagnosis_mode or "standard"
 
         # Derive STORM topic from primary diagnosis
         primary_dx = report.primary_diagnosis or "diagnostic dilemma"
-        topic = f"{primary_dx} differential diagnosis clinical evidence"
+        if mode == "zebra":
+            # Build a symptoms summary from the case for zebra STORM topic
+            symptoms = case.presenting_complaint or primary_dx
+            topic = f"Rare disease differential diagnosis for {symptoms[:120]}"
+        else:
+            topic = f"{primary_dx} differential diagnosis clinical evidence"
 
         output_dir = tempfile.mkdtemp(prefix="storm_")
 
@@ -449,7 +536,7 @@ def compile_report(self, prev_result, case_id: str):
         "label": "Building report...", "status": "running",
     })
 
-    from ..postprocess.report_compiler import compile_report as _compile
+    from ..postprocess.report_compiler import compile_report as _compile, compile_zebra_report
     from ..models.report import Report
     from ..models.case import Case
 
@@ -457,21 +544,45 @@ def compile_report(self, prev_result, case_id: str):
     try:
         report = session.query(Report).filter_by(case_id=case_id).first()
         case = session.query(Case).filter_by(id=case_id).first()
+        mode = case.diagnosis_mode or "standard"
 
         serper_refs = prev_result.get("serper_refs", []) if prev_result else []
 
         start = time.time()
-        compiled = _compile(
-            medgemma_clean=report.medgemma_clean or "",
-            hallucination_check=report.hallucination_check or {},
-            evidence_results=report.evidence_results or [],
-            evidence_synthesis=report.evidence_synthesis or "",
-            storm_article=report.storm_article_raw,
-            storm_url_to_info=report.storm_url_to_info,
-            serper_refs=serper_refs,
-            primary_diagnosis=report.primary_diagnosis or "unknown",
-            raw_case_text=case.raw_case_text or case.presenting_complaint or "",
-        )
+        if mode == "zebra":
+            # Extract zebra-specific data from claims if available
+            claims_data = report.extracted_claims
+            excluded_common = []
+            zebra_hypotheses = []
+            if isinstance(claims_data, dict):
+                excluded_common = claims_data.get("excluded_common", [])
+                zebra_hypotheses = claims_data.get("zebra_hypotheses", [])
+
+            compiled = compile_zebra_report(
+                medgemma_clean=report.medgemma_clean or "",
+                hallucination_check=report.hallucination_check or {},
+                evidence_results=report.evidence_results or [],
+                evidence_synthesis=report.evidence_synthesis or "",
+                storm_article=report.storm_article_raw,
+                storm_url_to_info=report.storm_url_to_info,
+                serper_refs=serper_refs,
+                primary_diagnosis=report.primary_diagnosis or "unknown",
+                raw_case_text=case.raw_case_text or case.presenting_complaint or "",
+                excluded_common=excluded_common,
+                zebra_hypotheses=zebra_hypotheses,
+            )
+        else:
+            compiled = _compile(
+                medgemma_clean=report.medgemma_clean or "",
+                hallucination_check=report.hallucination_check or {},
+                evidence_results=report.evidence_results or [],
+                evidence_synthesis=report.evidence_synthesis or "",
+                storm_article=report.storm_article_raw,
+                storm_url_to_info=report.storm_url_to_info,
+                serper_refs=serper_refs,
+                primary_diagnosis=report.primary_diagnosis or "unknown",
+                raw_case_text=case.raw_case_text or case.presenting_complaint or "",
+            )
         duration = time.time() - start
 
         report.report_markdown = compiled["report_markdown"]

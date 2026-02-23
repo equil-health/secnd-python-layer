@@ -9,7 +9,7 @@ import markdown
 from .citation_mapper import build_unified_bibliography, remap_citations_in_text
 from .junk_filter import filter_junk_refs
 from .storm_dedup import remove_redundant_sections
-from .summarizer import generate_executive_summary
+from .summarizer import generate_executive_summary, generate_zebra_summary
 
 
 def compile_report(
@@ -167,6 +167,220 @@ This report was generated using a multi-stage evidence-backed pipeline:
 
 ---
 *Generated with MedGemma 1.5 4B-IT + Gemini 2.0 Flash + STORM + Serper.dev*
+"""
+
+    # Render HTML
+    report_html = markdown.markdown(report_md, extensions=["tables", "fenced_code"])
+
+    return {
+        "report_markdown": report_md,
+        "report_html": report_html,
+        "references": unique_refs,
+        "executive_summary": exec_summary,
+        "total_sources": len(unique_refs),
+        "storm_article_clean": storm_article_clean,
+    }
+
+
+def compile_zebra_report(
+    medgemma_clean: str,
+    hallucination_check: dict,
+    evidence_results: list,
+    evidence_synthesis: str,
+    storm_article: str | None,
+    storm_url_to_info: dict | None,
+    serper_refs: list,
+    primary_diagnosis: str,
+    raw_case_text: str = "",
+    excluded_common: list | None = None,
+    zebra_hypotheses: list | None = None,
+) -> dict:
+    """Compile zebra-mode pipeline outputs into the rare disease report format.
+
+    Returns dict with same keys as compile_report():
+        report_markdown, report_html, references, executive_summary,
+        total_sources, storm_article_clean.
+    """
+    # Build unified bibliography
+    unique_refs, storm_remap, old_to_new = build_unified_bibliography(
+        serper_refs,
+        storm_url_to_info or {},
+    )
+
+    # Filter junk refs
+    unique_refs = filter_junk_refs(unique_refs)
+
+    # Re-number sequentially after filtering
+    for i, ref in enumerate(unique_refs):
+        ref["id"] = i + 1
+
+    # Process STORM article
+    storm_article_clean = ""
+    if storm_article:
+        storm_article_clean = remove_redundant_sections(storm_article)
+        if storm_remap:
+            storm_article_clean = remap_citations_in_text(storm_article_clean, storm_remap)
+
+    # Remap evidence synthesis citations
+    if evidence_synthesis and old_to_new:
+        evidence_synthesis = remap_citations_in_text(evidence_synthesis, old_to_new)
+
+    # Hallucination info
+    hallucinations = hallucination_check.get("issues", []) if hallucination_check else []
+
+    # Generate zebra executive summary
+    exec_summary = generate_zebra_summary(
+        medgemma_analysis=medgemma_clean,
+        evidence_synthesis=evidence_synthesis,
+        primary_diagnosis=primary_diagnosis,
+        total_sources=len(unique_refs),
+    )
+
+    # Build bibliography markdown
+    bibliography = ""
+    if unique_refs:
+        bibliography = "\n## References\n\n"
+        for ref in unique_refs:
+            title = ref.get("title") or "Untitled"
+            url = ref["url"]
+            snippet = ref.get("snippet", "")
+            if snippet:
+                bibliography += f"**[{ref['id']}]** {title}. {snippet}  \n{url}\n\n"
+            else:
+                bibliography += f"**[{ref['id']}]** {title}.  \n{url}\n\n"
+
+    # Build excluded common diagnoses section
+    excluded_section = ""
+    if excluded_common:
+        for item in excluded_common:
+            dx = item.get("diagnosis", "Unknown")
+            reason = item.get("reason", "")
+            excluded_section += f"**{dx}**\n\n{reason}\n\n&nbsp;\n\n"
+    else:
+        excluded_section = "*See the full analysis below for details on which common diagnoses were considered and excluded.*\n\n"
+
+    # Build zebra hypothesis cards — clean, spaced cards
+    hypothesis_cards = ""
+    if zebra_hypotheses:
+        for i, hyp in enumerate(zebra_hypotheses, 1):
+            name = hyp.get("hypothesis", "Unknown")
+            features = hyp.get("key_features", "")
+            hypothesis_cards += f"""### Hypothesis {i}: {name}
+
+{features}
+
+&nbsp;
+
+"""
+    else:
+        hypothesis_cards = "*See the full analysis below for detailed rare disease hypotheses.*\n\n"
+
+    # Build report markdown — clean, well-spaced sections
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    claims_count = len(evidence_results) if evidence_results else 0
+
+    report_md = f"""# Think Zebra Report
+
+> This report is AI-generated for informational and research purposes only.
+> It does not constitute medical advice, diagnosis, or treatment.
+> Rare disease diagnoses require specialist confirmation.
+
+&nbsp;
+
+---
+
+&nbsp;
+
+## Executive Summary
+
+{exec_summary}
+
+&nbsp;
+
+---
+
+&nbsp;
+
+## Common Diagnoses Excluded
+
+The following common diagnoses ("horses") were considered but excluded
+based on the clinical evidence.
+
+&nbsp;
+
+{excluded_section}
+
+---
+
+&nbsp;
+
+## Zebra Hypotheses
+
+Rare disease candidates that better explain the clinical picture:
+
+&nbsp;
+
+{hypothesis_cards}
+
+---
+
+&nbsp;
+
+## Full Analysis
+
+{medgemma_clean}
+
+&nbsp;
+
+---
+
+&nbsp;
+
+## Evidence Verification
+
+Each key claim was searched against rare disease databases
+and medical literature.
+
+&nbsp;
+
+{evidence_synthesis}
+
+&nbsp;
+
+---
+
+&nbsp;
+
+"""
+
+    if storm_article_clean:
+        report_md += f"""## Literature Review
+
+&nbsp;
+
+{storm_article_clean}
+
+&nbsp;
+
+---
+
+&nbsp;
+
+"""
+
+    report_md += bibliography
+
+    report_md += f"""
+
+&nbsp;
+
+---
+
+&nbsp;
+
+*Generated {now} | {len(unique_refs)} sources | {claims_count} claims verified*
+
+*Think Zebra — MedGemma + Gemini + STORM + Orphanet/OMIM/GARD*
 """
 
     # Render HTML
