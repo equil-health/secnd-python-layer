@@ -48,7 +48,7 @@ async def submit_case(body: CaseSubmitStructured, db: AsyncSession = Depends(get
     pipeline_run = PipelineRun(
         case_id=case.id,
         status="queued",
-        total_steps=10,
+        total_steps=12,
         steps=[
             {"step": 1, "label": "Case accepted", "status": "done"},
         ],

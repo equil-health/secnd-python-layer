@@ -89,6 +89,7 @@ async def get_report(case_id: UUID, db: AsyncSession = Depends(get_db)):
         primary_diagnosis=report.primary_diagnosis,
         total_sources=report.total_sources or 0,
         hallucination_issues=hallucination_issues,
+        verification_stats=report.verification_stats,
         report_html=report.report_html,
         pdf_url=f"/api/cases/{case_id}/report/pdf" if report.report_markdown else None,
         docx_url=f"/api/cases/{case_id}/report/docx" if report.report_markdown else None,

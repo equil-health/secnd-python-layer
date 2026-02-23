@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     # External APIs
     SERPER_API_KEY: str = ""
     HF_TOKEN: str = ""
+    OPENALEX_EMAIL: str = ""
+    OPENALEX_API_KEY: str = ""
 
     # Infrastructure
     DATABASE_URL: str = ""

@@ -62,6 +62,7 @@ class Report(Base):
     # Stats
     total_sources = Column(Integer, default=0)
     total_claims = Column(Integer, default=0)
+    verification_stats = Column(JSONB)
     primary_diagnosis = Column(String(200))
 
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))

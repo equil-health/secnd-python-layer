@@ -22,6 +22,7 @@ def compile_report(
     serper_refs: list,
     primary_diagnosis: str,
     raw_case_text: str = "",
+    verification_stats: dict | None = None,
 ) -> dict:
     """Compile all pipeline outputs into the final report.
 
@@ -65,18 +66,11 @@ def compile_report(
         hallucination_count=len(hallucinations),
     )
 
-    # Build bibliography markdown
-    bibliography = ""
-    if unique_refs:
-        bibliography = "\n## References\n\n"
-        for ref in unique_refs:
-            title = ref.get("title") or "Untitled"
-            url = ref["url"]
-            snippet = ref.get("snippet", "")
-            if snippet:
-                bibliography += f"**[{ref['id']}]** {title}. {snippet}  \n{url}\n\n"
-            else:
-                bibliography += f"**[{ref['id']}]** {title}.  \n{url}\n\n"
+    # Build bibliography markdown with enriched reference format
+    bibliography = _build_enriched_bibliography(unique_refs)
+
+    # Build verification summary block
+    verification_block = _build_verification_summary(verification_stats)
 
     # Build report markdown
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -98,6 +92,8 @@ def compile_report(
 ## Executive Summary
 
 {exec_summary}
+
+{verification_block}
 
 ---
 
@@ -194,6 +190,7 @@ def compile_zebra_report(
     raw_case_text: str = "",
     excluded_common: list | None = None,
     zebra_hypotheses: list | None = None,
+    verification_stats: dict | None = None,
 ) -> dict:
     """Compile zebra-mode pipeline outputs into the rare disease report format.
 
@@ -236,18 +233,11 @@ def compile_zebra_report(
         total_sources=len(unique_refs),
     )
 
-    # Build bibliography markdown
-    bibliography = ""
-    if unique_refs:
-        bibliography = "\n## References\n\n"
-        for ref in unique_refs:
-            title = ref.get("title") or "Untitled"
-            url = ref["url"]
-            snippet = ref.get("snippet", "")
-            if snippet:
-                bibliography += f"**[{ref['id']}]** {title}. {snippet}  \n{url}\n\n"
-            else:
-                bibliography += f"**[{ref['id']}]** {title}.  \n{url}\n\n"
+    # Build bibliography markdown with enriched reference format
+    bibliography = _build_enriched_bibliography(unique_refs)
+
+    # Build verification summary block
+    verification_block = _build_verification_summary(verification_stats)
 
     # Build excluded common diagnoses section
     excluded_section = ""
@@ -294,6 +284,8 @@ def compile_zebra_report(
 ## Executive Summary
 
 {exec_summary}
+
+{verification_block}
 
 &nbsp;
 
@@ -394,3 +386,91 @@ and medical literature.
         "total_sources": len(unique_refs),
         "storm_article_clean": storm_article_clean,
     }
+
+
+def _build_verification_summary(verification_stats: dict | None) -> str:
+    """Build a citation verification summary block for the report."""
+    if not verification_stats:
+        return ""
+
+    total = verification_stats.get("total", 0)
+    verified = verification_stats.get("verified", 0)
+    peer_reviewed = verification_stats.get("peer_reviewed", 0)
+    landmark = verification_stats.get("landmark", 0)
+    retracted = verification_stats.get("retracted", 0)
+
+    parts = [f"{verified}/{total} verified"]
+    if peer_reviewed:
+        parts.append(f"{peer_reviewed} peer-reviewed")
+    if landmark:
+        parts.append(f"{landmark} landmark")
+    parts.append(f"{retracted} retracted")
+
+    summary_line = " | ".join(parts)
+
+    block = f"""
+## Citation Verification
+
+{summary_line}
+"""
+    if retracted:
+        block += f"\n**Warning:** {retracted} retracted paper(s) detected and excluded from conclusions.\n"
+
+    return block
+
+
+def _build_enriched_bibliography(refs: list) -> str:
+    """Build bibliography with enriched reference format including verification data."""
+    if not refs:
+        return ""
+
+    bibliography = "\n## References\n\n"
+    for ref in refs:
+        title = ref.get("title") or "Untitled"
+        url = ref["url"]
+        ref_id = ref["id"]
+
+        # Check for retraction
+        if ref.get("is_retracted"):
+            bibliography += f"**[{ref_id}]** RETRACTED — {title}\n"
+            bibliography += "This paper was retracted. Findings excluded from analysis.\n\n"
+            continue
+
+        # Authors + title + journal line
+        authors = ref.get("authors", [])
+        author_str = ", ".join(authors) + ". " if authors else ""
+        journal = ref.get("journal", "")
+        year = ref.get("year", "")
+        journal_year = ""
+        if journal and year:
+            journal_year = f" *{journal}*, {year}"
+        elif journal:
+            journal_year = f" *{journal}*"
+        elif year:
+            journal_year = f" {year}"
+
+        doi = ref.get("doi", "")
+        doi_str = f" | DOI: {doi}" if doi else ""
+
+        bibliography += f"**[{ref_id}]** {author_str}\"{title}\"{journal_year}{doi_str}  \n"
+
+        # Verification status line
+        meta_parts = []
+        if ref.get("is_verified"):
+            meta_parts.append("Verified")
+            cite_count = ref.get("citation_count", 0)
+            if cite_count:
+                meta_parts.append(f"Cited {cite_count} times")
+            if ref.get("is_oa"):
+                meta_parts.append("Open Access")
+        elif ref.get("quality_tier") == "guideline":
+            meta_parts.append("Clinical Guideline / Authoritative Source")
+        elif ref.get("quality_tier") == "unverified":
+            meta_parts.append("Unverified")
+
+        if meta_parts:
+            bibliography += f"{' | '.join(meta_parts)}  \n"
+
+        bibliography += f"{url}\n\n"
+
+    return bibliography

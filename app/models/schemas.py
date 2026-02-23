@@ -105,6 +105,7 @@ class ReportResponse(BaseModel):
     primary_diagnosis: Optional[str] = None
     total_sources: int = 0
     hallucination_issues: int = 0
+    verification_stats: Optional[dict] = None
     report_html: Optional[str] = None
     pdf_url: Optional[str] = None
     docx_url: Optional[str] = None

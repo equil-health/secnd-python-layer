@@ -30,8 +30,10 @@ def dispatch_pipeline(case_id: str):
         validate_claims.s(case_id),
         extract_claims_task.s(case_id),
         search_evidence.s(case_id),
+        verify_citations.s(case_id),
         synthesize_evidence_task.s(case_id),
         storm_research.s(case_id),
+        verify_storm_citations.s(case_id),
         compile_report.s(case_id),
     )
     pipeline.apply_async()
@@ -430,11 +432,64 @@ def search_evidence(self, prev_result, case_id: str):
         session.close()
 
 
-@app.task(bind=True, name="pipeline.synthesize_evidence")
-def synthesize_evidence_task(self, prev_result, case_id: str):
-    """Step 7: Gemini verifies claims against evidence."""
+@app.task(bind=True, name="pipeline.verify_citations")
+def verify_citations(self, prev_result, case_id: str):
+    """Step 7: Verify Serper references against OpenAlex."""
     broadcast(case_id, {
         "type": "step_update", "step": 7,
+        "label": "Verifying citations (OpenAlex)...", "status": "running",
+    })
+
+    from .openalex import OpenAlexVerifier
+    from ..models.report import Report
+
+    session = _get_sync_session()
+    try:
+        report = session.query(Report).filter_by(case_id=case_id).first()
+        serper_refs = prev_result.get("serper_refs", []) if prev_result else []
+
+        start = time.time()
+        verifier = OpenAlexVerifier(settings.OPENALEX_EMAIL, settings.OPENALEX_API_KEY)
+        enriched_refs = verifier.verify_all(serper_refs)
+        duration = time.time() - start
+
+        # Compute stats
+        total = len(enriched_refs)
+        verified = sum(1 for r in enriched_refs if r.get("is_verified"))
+        retracted = sum(1 for r in enriched_refs if r.get("is_retracted"))
+        peer_reviewed = sum(1 for r in enriched_refs if r.get("quality_tier") in ("peer-reviewed", "strong", "landmark"))
+        unverified = sum(1 for r in enriched_refs if r.get("quality_tier") == "unverified")
+        landmark = sum(1 for r in enriched_refs if r.get("quality_tier") == "landmark")
+
+        stats = {
+            "total": total,
+            "verified": verified,
+            "retracted": retracted,
+            "peer_reviewed": peer_reviewed,
+            "unverified": unverified,
+            "landmark": landmark,
+        }
+
+        report.verification_stats = stats
+        session.commit()
+
+        broadcast(case_id, {
+            "type": "step_update", "step": 7,
+            "label": "Verifying citations (OpenAlex)...", "status": "done",
+            "duration_s": round(duration, 1),
+            "preview": f"{verified}/{total} verified, {retracted} retracted",
+        })
+
+        return {"serper_refs": enriched_refs, "verification_stats": stats}
+    finally:
+        session.close()
+
+
+@app.task(bind=True, name="pipeline.synthesize_evidence")
+def synthesize_evidence_task(self, prev_result, case_id: str):
+    """Step 8: Gemini verifies claims against evidence."""
+    broadcast(case_id, {
+        "type": "step_update", "step": 8,
         "label": "Verifying claims against evidence...", "status": "running",
     })
 
@@ -459,7 +514,7 @@ def synthesize_evidence_task(self, prev_result, case_id: str):
         session.commit()
 
         broadcast(case_id, {
-            "type": "step_update", "step": 7,
+            "type": "step_update", "step": 8,
             "label": "Verifying claims against evidence...", "status": "done",
             "duration_s": round(duration, 1),
         })
@@ -471,9 +526,9 @@ def synthesize_evidence_task(self, prev_result, case_id: str):
 
 @app.task(bind=True, name="pipeline.storm_research")
 def storm_research(self, prev_result, case_id: str):
-    """Step 8: STORM deep research on the diagnostic dilemma."""
+    """Step 9: STORM deep research on the diagnostic dilemma."""
     broadcast(case_id, {
-        "type": "step_update", "step": 8,
+        "type": "step_update", "step": 9,
         "label": "STORM deep research...", "status": "running",
     })
 
@@ -510,14 +565,14 @@ def storm_research(self, prev_result, case_id: str):
 
         if result["error"]:
             broadcast(case_id, {
-                "type": "step_update", "step": 8,
+                "type": "step_update", "step": 9,
                 "label": "STORM deep research...", "status": "done",
                 "duration_s": round(duration, 1),
                 "preview": f"Completed with warning: {result['error'][:80]}",
             })
         else:
             broadcast(case_id, {
-                "type": "step_update", "step": 8,
+                "type": "step_update", "step": 9,
                 "label": "STORM deep research...", "status": "done",
                 "duration_s": round(duration, 1),
                 "preview": f"Article: {len(result['article'])} chars",
@@ -528,11 +583,86 @@ def storm_research(self, prev_result, case_id: str):
         session.close()
 
 
+@app.task(bind=True, name="pipeline.verify_storm_citations")
+def verify_storm_citations(self, prev_result, case_id: str):
+    """Step 10: Verify STORM references against OpenAlex."""
+    broadcast(case_id, {
+        "type": "step_update", "step": 10,
+        "label": "Verifying STORM citations...", "status": "running",
+    })
+
+    from .openalex import OpenAlexVerifier
+    from ..models.report import Report
+
+    session = _get_sync_session()
+    try:
+        report = session.query(Report).filter_by(case_id=case_id).first()
+        serper_refs = prev_result.get("serper_refs", []) if prev_result else []
+
+        start = time.time()
+        verifier = OpenAlexVerifier(settings.OPENALEX_EMAIL, settings.OPENALEX_API_KEY)
+
+        # Convert STORM url_to_info into reference list for verification
+        storm_url_to_info = report.storm_url_to_info or {}
+        storm_refs = []
+        for url, info in storm_url_to_info.items():
+            storm_refs.append({
+                "url": url,
+                "title": info.get("title", "") if isinstance(info, dict) else "",
+            })
+
+        if storm_refs:
+            verifier.verify_all(storm_refs)
+
+            # Merge verification data back into storm_url_to_info
+            for ref in storm_refs:
+                url = ref.get("url", "")
+                if url in storm_url_to_info:
+                    info = storm_url_to_info[url]
+                    if isinstance(info, dict):
+                        info["is_verified"] = ref.get("is_verified", False)
+                        info["quality_tier"] = ref.get("quality_tier", "unverified")
+                        info["citation_count"] = ref.get("citation_count", 0)
+                        info["is_retracted"] = ref.get("is_retracted", False)
+                        info["doi"] = ref.get("doi")
+                        info["journal"] = ref.get("journal")
+                        info["year"] = ref.get("year")
+
+            report.storm_url_to_info = storm_url_to_info
+            # Flag for SQLAlchemy to detect JSONB mutation
+            from sqlalchemy.orm.attributes import flag_modified
+            flag_modified(report, "storm_url_to_info")
+
+        # Update verification stats with combined counts
+        existing_stats = report.verification_stats or {}
+        storm_verified = sum(1 for r in storm_refs if r.get("is_verified"))
+        storm_retracted = sum(1 for r in storm_refs if r.get("is_retracted"))
+        existing_stats["storm_total"] = len(storm_refs)
+        existing_stats["storm_verified"] = storm_verified
+        existing_stats["storm_retracted"] = storm_retracted
+        report.verification_stats = existing_stats
+        flag_modified(report, "verification_stats")
+
+        session.commit()
+        duration = time.time() - start
+
+        broadcast(case_id, {
+            "type": "step_update", "step": 10,
+            "label": "Verifying STORM citations...", "status": "done",
+            "duration_s": round(duration, 1),
+            "preview": f"{storm_verified}/{len(storm_refs)} STORM refs verified",
+        })
+
+        return {"serper_refs": serper_refs}
+    finally:
+        session.close()
+
+
 @app.task(bind=True, name="pipeline.compile_report")
 def compile_report(self, prev_result, case_id: str):
-    """Step 9: Compile all outputs into final report."""
+    """Step 11: Compile all outputs into final report."""
     broadcast(case_id, {
-        "type": "step_update", "step": 9,
+        "type": "step_update", "step": 11,
         "label": "Building report...", "status": "running",
     })
 
@@ -547,6 +677,8 @@ def compile_report(self, prev_result, case_id: str):
         mode = case.diagnosis_mode or "standard"
 
         serper_refs = prev_result.get("serper_refs", []) if prev_result else []
+
+        verification_stats = report.verification_stats
 
         start = time.time()
         if mode == "zebra":
@@ -570,6 +702,7 @@ def compile_report(self, prev_result, case_id: str):
                 raw_case_text=case.raw_case_text or case.presenting_complaint or "",
                 excluded_common=excluded_common,
                 zebra_hypotheses=zebra_hypotheses,
+                verification_stats=verification_stats,
             )
         else:
             compiled = _compile(
@@ -582,6 +715,7 @@ def compile_report(self, prev_result, case_id: str):
                 serper_refs=serper_refs,
                 primary_diagnosis=report.primary_diagnosis or "unknown",
                 raw_case_text=case.raw_case_text or case.presenting_complaint or "",
+                verification_stats=verification_stats,
             )
         duration = time.time() - start
 
@@ -599,7 +733,7 @@ def compile_report(self, prev_result, case_id: str):
         session.commit()
 
         broadcast(case_id, {
-            "type": "step_update", "step": 9,
+            "type": "step_update", "step": 11,
             "label": "Building report...", "status": "done",
             "duration_s": round(duration, 1),
         })

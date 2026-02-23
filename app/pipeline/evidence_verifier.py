@@ -9,6 +9,12 @@ SYNTHESIS_PROMPT = """You are a medical evidence reviewer. A specialist AI (MedG
 
 YOUR TASK: For each claim, assess whether the literature SUPPORTS, PARTIALLY SUPPORTS, or CONTRADICTS it. Write a structured evidence review.
 
+IMPORTANT — Evidence Quality:
+- Verified papers (found in OpenAlex) carry more weight
+- Landmark papers (100+ citations) are strongest evidence
+- Preprints are not yet peer-reviewed — note this
+- RETRACTED papers MUST be excluded from your conclusions
+
 Format your response as a markdown document with this structure:
 
 ## Evidence Review: [{primary_diagnosis}]
@@ -35,15 +41,42 @@ EVIDENCE REVIEW:"""
 
 
 def _build_evidence_context(evidence_results: list, all_references: list) -> str:
-    """Build a text summary of search results for each claim."""
+    """Build a text summary of search results for each claim, with verification metadata."""
+    # Build a URL -> ref lookup for quick access to verification data
+    ref_by_url = {r["url"]: r for r in all_references if r.get("url")}
+
     context = ""
     for ev in evidence_results:
         context += f"\n### Claim: {ev['claim']}\n"
         context += f"Search: {ev['search_query']}\n"
         for sr in ev.get("search_results", [])[:3]:
-            ref_ids = [r["id"] for r in all_references if r["url"] == sr.get("url")]
+            url = sr.get("url", "")
+            ref_ids = [r["id"] for r in all_references if r["url"] == url]
             ref_tag = f"[{ref_ids[0]}]" if ref_ids else ""
-            context += f"- {ref_tag} {sr.get('title', '')}: {sr.get('snippet', '')}\n"
+
+            # Add verification metadata if available
+            ref_data = ref_by_url.get(url, {})
+            meta_parts = []
+            if ref_data.get("is_retracted"):
+                meta_parts.append("RETRACTED")
+            elif ref_data.get("is_verified"):
+                tier = ref_data.get("quality_tier", "")
+                cite_count = ref_data.get("citation_count", 0)
+                journal = ref_data.get("journal", "")
+                year = ref_data.get("year", "")
+                label = f"Verified"
+                if cite_count:
+                    label += f", Cited {cite_count} times"
+                if journal:
+                    label += f", {journal}"
+                if year:
+                    label += f" {year}"
+                meta_parts.append(label)
+            elif ref_data.get("quality_tier") == "unverified":
+                meta_parts.append("Unverified")
+
+            meta_str = f" [{', '.join(meta_parts)}]" if meta_parts else ""
+            context += f"- {ref_tag}{meta_str} {sr.get('title', '')}: {sr.get('snippet', '')}\n"
     return context
 
 
