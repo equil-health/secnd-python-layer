@@ -19,20 +19,7 @@ def _pick_search_rm(serper_api_key: str):
 
     Returns (rm_instance, rm_name).
     """
-    # 1. Google Custom Search (preferred)
-    if _check_google_cse_health():
-        try:
-            from knowledge_storm.rm import GoogleSearch
-            rm = GoogleSearch(
-                google_search_api_key=settings.GOOGLE_SEARCH_API_KEY,
-                google_cse_id=settings.GOOGLE_CSE_ID,
-                k=3,
-            )
-            return rm, "google_cse"
-        except Exception as e:
-            print(f"[storm_runner] Google CSE init failed: {e}", file=sys.stderr)
-
-    # 2. Serper (if key configured and API is healthy)
+    # 1. Serper (preferred)
     if serper_api_key:
         try:
             from .serper import check_serper_health
@@ -47,6 +34,19 @@ def _pick_search_rm(serper_api_key: str):
                 print("[storm_runner] Serper health check failed, skipping", file=sys.stderr)
         except Exception as e:
             print(f"[storm_runner] Serper init failed: {e}", file=sys.stderr)
+
+    # 2. Google Custom Search (backup)
+    if _check_google_cse_health():
+        try:
+            from knowledge_storm.rm import GoogleSearch
+            rm = GoogleSearch(
+                google_search_api_key=settings.GOOGLE_SEARCH_API_KEY,
+                google_cse_id=settings.GOOGLE_CSE_ID,
+                k=3,
+            )
+            return rm, "google_cse"
+        except Exception as e:
+            print(f"[storm_runner] Google CSE init failed: {e}", file=sys.stderr)
 
     # 3. DuckDuckGo (free fallback, no key needed)
     try:
