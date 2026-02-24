@@ -432,9 +432,11 @@ def search_evidence(self, prev_result, case_id: str):
         session.close()
 
 
-@app.task(bind=True, name="pipeline.verify_citations")
+@app.task(bind=True, name="pipeline.verify_citations", soft_time_limit=300, time_limit=360)
 def verify_citations(self, prev_result, case_id: str):
     """Step 7: Verify Serper references against OpenAlex."""
+    from celery.exceptions import SoftTimeLimitExceeded
+
     broadcast(case_id, {
         "type": "step_update", "step": 7,
         "label": "Verifying citations (OpenAlex)...", "status": "running",
@@ -444,11 +446,11 @@ def verify_citations(self, prev_result, case_id: str):
     from ..models.report import Report
 
     session = _get_sync_session()
+    start = time.time()
     try:
         report = session.query(Report).filter_by(case_id=case_id).first()
         serper_refs = prev_result.get("serper_refs", []) if prev_result else []
 
-        start = time.time()
         verifier = OpenAlexVerifier(settings.OPENALEX_EMAIL, settings.OPENALEX_API_KEY)
         enriched_refs = verifier.verify_all(serper_refs)
         duration = time.time() - start
@@ -481,6 +483,20 @@ def verify_citations(self, prev_result, case_id: str):
         })
 
         return {"serper_refs": enriched_refs, "verification_stats": stats}
+    except SoftTimeLimitExceeded:
+        try:
+            session.commit()
+        except Exception:
+            pass
+        duration = time.time() - start
+        serper_refs = prev_result.get("serper_refs", []) if prev_result else []
+        broadcast(case_id, {
+            "type": "step_update", "step": 7,
+            "label": "Verifying citations (OpenAlex)...", "status": "done",
+            "duration_s": round(duration, 1),
+            "preview": "Citation verification timed out — continuing with partial results",
+        })
+        return {"serper_refs": serper_refs, "verification_stats": {}}
     finally:
         session.close()
 
@@ -595,9 +611,11 @@ def storm_research(self, prev_result, case_id: str):
         session.close()
 
 
-@app.task(bind=True, name="pipeline.verify_storm_citations")
+@app.task(bind=True, name="pipeline.verify_storm_citations", soft_time_limit=300, time_limit=360)
 def verify_storm_citations(self, prev_result, case_id: str):
     """Step 10: Verify STORM references against OpenAlex."""
+    from celery.exceptions import SoftTimeLimitExceeded
+
     broadcast(case_id, {
         "type": "step_update", "step": 10,
         "label": "Verifying STORM citations...", "status": "running",
@@ -607,11 +625,11 @@ def verify_storm_citations(self, prev_result, case_id: str):
     from ..models.report import Report
 
     session = _get_sync_session()
+    start = time.time()
     try:
         report = session.query(Report).filter_by(case_id=case_id).first()
         serper_refs = prev_result.get("serper_refs", []) if prev_result else []
 
-        start = time.time()
         verifier = OpenAlexVerifier(settings.OPENALEX_EMAIL, settings.OPENALEX_API_KEY)
 
         # Convert STORM url_to_info into reference list for verification
@@ -641,7 +659,6 @@ def verify_storm_citations(self, prev_result, case_id: str):
                         info["year"] = ref.get("year")
 
             report.storm_url_to_info = storm_url_to_info
-            # Flag for SQLAlchemy to detect JSONB mutation
             from sqlalchemy.orm.attributes import flag_modified
             flag_modified(report, "storm_url_to_info")
 
@@ -666,6 +683,20 @@ def verify_storm_citations(self, prev_result, case_id: str):
         })
 
         return {"serper_refs": serper_refs}
+    except SoftTimeLimitExceeded:
+        # Save whatever we've verified so far
+        try:
+            session.commit()
+        except Exception:
+            pass
+        duration = time.time() - start
+        broadcast(case_id, {
+            "type": "step_update", "step": 10,
+            "label": "Verifying STORM citations...", "status": "done",
+            "duration_s": round(duration, 1),
+            "preview": "Citation verification timed out — continuing with partial results",
+        })
+        return {"serper_refs": prev_result.get("serper_refs", []) if prev_result else []}
     finally:
         session.close()
 
