@@ -6,6 +6,7 @@ See docs/openalex_implementation.md for full spec.
 
 import hashlib
 import json
+import logging
 import re
 import time
 
@@ -13,6 +14,8 @@ import redis
 import requests
 
 from ..config import settings
+
+logger = logging.getLogger(__name__)
 
 _redis = redis.Redis.from_url(settings.REDIS_URL)
 CACHE_TTL = 86400  # 24 hours
@@ -76,8 +79,12 @@ class OpenAlexVerifier:
             resp = self.session.get(url, params=params, timeout=15)
             if resp.status_code == 200:
                 return resp.json()
-        except Exception:
-            pass
+            else:
+                logger.warning(f"[OpenAlex] HTTP {resp.status_code} for {url}")
+        except requests.Timeout:
+            logger.warning(f"[OpenAlex] Timeout (15s) for {url}")
+        except Exception as e:
+            logger.warning(f"[OpenAlex] Request failed: {e}")
         return None
 
     def _should_skip(self, url: str) -> bool:
@@ -274,13 +281,18 @@ class OpenAlexVerifier:
 
         Returns enriched references list with verification data added.
         """
+        total = len(references)
+        logger.info(f"[OpenAlex] Starting verification of {total} references")
+
         # Phase 1: Extract DOIs and batch-verify
         doi_map = {}  # ref_index -> doi
+        skipped = 0
         for i, ref in enumerate(references):
             if self._should_skip(ref.get("url", "")):
                 ref["is_verified"] = False
                 ref["quality_tier"] = "guideline" if not self._is_generic_skip(ref.get("url", "")) else "other"
                 ref["verification_skipped"] = True
+                skipped += 1
                 continue
             doi = self._extract_doi(ref.get("url", ""))
             if doi:
@@ -288,15 +300,22 @@ class OpenAlexVerifier:
 
         # Batch DOI lookup
         unique_dois = list(set(doi_map.values()))
+        logger.info(f"[OpenAlex] Phase 1: {skipped} skipped, {len(unique_dois)} DOIs for batch lookup")
         batch_results = self.verify_batch_dois(unique_dois) if unique_dois else {}
+        logger.info(f"[OpenAlex] Phase 1 done: {len(batch_results)} DOIs resolved")
 
         # Apply batch results
+        batch_hits = 0
         for i, doi in doi_map.items():
             oa_data = batch_results.get(doi.lower())
             if oa_data:
                 self._apply_verification(references[i], oa_data)
+                batch_hits += 1
 
         # Phase 2: Individual lookups for misses
+        remaining = sum(1 for r in references if r.get("is_verified") is None and not r.get("verification_skipped"))
+        logger.info(f"[OpenAlex] Phase 2: {remaining} refs need individual lookup")
+        individual_done = 0
         for i, ref in enumerate(references):
             if ref.get("is_verified") is not None or ref.get("verification_skipped"):
                 continue
@@ -313,6 +332,12 @@ class OpenAlexVerifier:
                 ref["is_verified"] = False
                 ref["quality_tier"] = "unverified"
 
+            individual_done += 1
+            if individual_done % 10 == 0:
+                logger.info(f"[OpenAlex] Phase 2 progress: {individual_done}/{remaining}")
+
+        logger.info(f"[OpenAlex] Phase 2 done: {individual_done} individual lookups completed")
+
         # Phase 3: Sort by quality (keep original IDs)
         tier_order = {
             "retracted": 99,
@@ -326,6 +351,9 @@ class OpenAlexVerifier:
             "unverified": 8,
         }
         references.sort(key=lambda r: tier_order.get(r.get("quality_tier", "unverified"), 10))
+
+        verified = sum(1 for r in references if r.get("is_verified"))
+        logger.info(f"[OpenAlex] Verification complete: {verified}/{total} verified")
 
         return references
 
