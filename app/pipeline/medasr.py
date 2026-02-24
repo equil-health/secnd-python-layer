@@ -14,6 +14,10 @@ from transformers import AutoModel, AutoProcessor
 
 from ..config import settings
 
+# Ensure HF_TOKEN from .env is available to transformers library
+if settings.HF_TOKEN and not os.environ.get("HF_TOKEN"):
+    os.environ["HF_TOKEN"] = settings.HF_TOKEN
+
 _processor = None
 _model = None
 
