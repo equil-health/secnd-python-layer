@@ -45,6 +45,7 @@ def _broadcast(case_id: str, message: dict):
 async def submit_audio(
     audio: UploadFile = File(...),
     question: str = Form(None),
+    mode: str = Form("standard"),
     db: AsyncSession = Depends(get_db),
 ):
     """Submit an audio file for MedASR transcription + diagnosis pipeline.
@@ -75,6 +76,7 @@ async def submit_audio(
         presenting_complaint="[Audio case — transcription pending]",
         status="processing",
         pipeline_type="diagnosis",
+        diagnosis_mode=mode if mode in ("standard", "zebra") else "standard",
     )
     db.add(case)
     await db.flush()
