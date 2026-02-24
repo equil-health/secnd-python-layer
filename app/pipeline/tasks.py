@@ -524,9 +524,11 @@ def synthesize_evidence_task(self, prev_result, case_id: str):
         session.close()
 
 
-@app.task(bind=True, name="pipeline.storm_research")
+@app.task(bind=True, name="pipeline.storm_research", soft_time_limit=300, time_limit=360)
 def storm_research(self, prev_result, case_id: str):
     """Step 9: STORM deep research on the diagnostic dilemma."""
+    from celery.exceptions import SoftTimeLimitExceeded
+
     broadcast(case_id, {
         "type": "step_update", "step": 9,
         "label": "STORM deep research...", "status": "running",
@@ -537,6 +539,7 @@ def storm_research(self, prev_result, case_id: str):
     from ..models.case import Case
 
     session = _get_sync_session()
+    start = time.time()
     try:
         report = session.query(Report).filter_by(case_id=case_id).first()
         case = session.query(Case).filter_by(id=case_id).first()
@@ -553,7 +556,6 @@ def storm_research(self, prev_result, case_id: str):
 
         output_dir = tempfile.mkdtemp(prefix="storm_")
 
-        start = time.time()
         result = run_storm(topic=topic, output_dir=output_dir)
         duration = time.time() - start
 
@@ -580,6 +582,15 @@ def storm_research(self, prev_result, case_id: str):
             })
 
         return {"storm_length": len(result["article"] or ""), "serper_refs": serper_refs}
+    except SoftTimeLimitExceeded:
+        duration = time.time() - start
+        broadcast(case_id, {
+            "type": "step_update", "step": 9,
+            "label": "STORM deep research...", "status": "done",
+            "duration_s": round(duration, 1),
+            "preview": "STORM timed out — continuing pipeline without deep research",
+        })
+        return {"storm_length": 0, "serper_refs": prev_result.get("serper_refs", []) if prev_result else []}
     finally:
         session.close()
 
@@ -828,9 +839,11 @@ Return JSON only:
         session.close()
 
 
-@app.task(bind=True, name="pipeline.research_storm")
+@app.task(bind=True, name="pipeline.research_storm", soft_time_limit=300, time_limit=360)
 def research_storm(self, prev_result, case_id: str):
     """Step 3: STORM deep research on the topic."""
+    from celery.exceptions import SoftTimeLimitExceeded
+
     broadcast(case_id, {
         "type": "step_update", "step": 3,
         "label": "STORM deep research...", "status": "running",
@@ -840,11 +853,11 @@ def research_storm(self, prev_result, case_id: str):
     from ..models.report import Report
 
     session = _get_sync_session()
+    start = time.time()
     try:
         refined_topic = prev_result.get("refined_topic", "research topic") if prev_result else "research topic"
         output_dir = tempfile.mkdtemp(prefix="storm_research_")
 
-        start = time.time()
         result = run_storm(topic=refined_topic, output_dir=output_dir)
         duration = time.time() - start
 
@@ -871,6 +884,15 @@ def research_storm(self, prev_result, case_id: str):
             })
 
         return {"storm_length": len(result["article"] or ""), "refined_topic": refined_topic}
+    except SoftTimeLimitExceeded:
+        duration = time.time() - start
+        broadcast(case_id, {
+            "type": "step_update", "step": 3,
+            "label": "STORM deep research...", "status": "done",
+            "duration_s": round(duration, 1),
+            "preview": "STORM timed out — continuing pipeline without deep research",
+        })
+        return {"storm_length": 0, "refined_topic": prev_result.get("refined_topic", "research topic") if prev_result else "research topic"}
     finally:
         session.close()
 
