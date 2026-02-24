@@ -623,6 +623,7 @@ def verify_storm_citations(self, prev_result, case_id: str):
 
     from .openalex import OpenAlexVerifier
     from ..models.report import Report
+    from sqlalchemy.orm.attributes import flag_modified
 
     session = _get_sync_session()
     start = time.time()
@@ -659,7 +660,6 @@ def verify_storm_citations(self, prev_result, case_id: str):
                         info["year"] = ref.get("year")
 
             report.storm_url_to_info = storm_url_to_info
-            from sqlalchemy.orm.attributes import flag_modified
             flag_modified(report, "storm_url_to_info")
 
         # Update verification stats with combined counts
