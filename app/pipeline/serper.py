@@ -11,6 +11,23 @@ _redis = redis.Redis.from_url(settings.REDIS_URL)
 CACHE_TTL = 86400  # 24 hours
 
 
+def check_serper_health() -> bool:
+    """Quick health check — returns True if Serper API responds within 5s."""
+    try:
+        resp = requests.post(
+            "https://google.serper.dev/search",
+            json={"q": "test", "num": 1},
+            headers={
+                "X-API-KEY": settings.SERPER_API_KEY,
+                "Content-Type": "application/json",
+            },
+            timeout=5,
+        )
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
 def search_serper(query: str, num_results: int = 5, query_suffix: str = "") -> list[dict]:
     """Search via Serper.dev API with Redis caching (24h TTL)."""
     if query_suffix:

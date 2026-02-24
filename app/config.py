@@ -14,6 +14,8 @@ class Settings(BaseSettings):
 
     # External APIs
     SERPER_API_KEY: str = ""
+    GOOGLE_SEARCH_API_KEY: str = ""
+    GOOGLE_CSE_ID: str = ""
     HF_TOKEN: str = ""
     OPENALEX_EMAIL: str = ""
     OPENALEX_API_KEY: str = ""
@@ -35,6 +37,7 @@ class Settings(BaseSettings):
     GEMINI_TEMPERATURE: float = 0.3
     SERPER_RESULTS_PER_QUERY: int = 5
     STORM_SEARCH_TOP_K: int = 20
+    STORM_TIMEOUT_SECONDS: int = 180
     PIPELINE_TIMEOUT_SECONDS: int = 300
 
     # MedASR

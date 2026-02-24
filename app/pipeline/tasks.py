@@ -563,19 +563,20 @@ def storm_research(self, prev_result, case_id: str):
 
         serper_refs = prev_result.get("serper_refs", []) if prev_result else []
 
+        backend = result.get("search_backend", "unknown")
         if result["error"]:
             broadcast(case_id, {
                 "type": "step_update", "step": 9,
                 "label": "STORM deep research...", "status": "done",
                 "duration_s": round(duration, 1),
-                "preview": f"Completed with warning: {result['error'][:80]}",
+                "preview": f"Warning ({backend}): {result['error'][:80]}",
             })
         else:
             broadcast(case_id, {
                 "type": "step_update", "step": 9,
                 "label": "STORM deep research...", "status": "done",
                 "duration_s": round(duration, 1),
-                "preview": f"Article: {len(result['article'])} chars",
+                "preview": f"Article: {len(result['article'])} chars ({backend})",
             })
 
         return {"storm_length": len(result["article"] or ""), "serper_refs": serper_refs}
@@ -853,19 +854,20 @@ def research_storm(self, prev_result, case_id: str):
             report.storm_url_to_info = result["url_to_info"]
             session.commit()
 
+        backend = result.get("search_backend", "unknown")
         if result["error"]:
             broadcast(case_id, {
                 "type": "step_update", "step": 3,
                 "label": "STORM deep research...", "status": "done",
                 "duration_s": round(duration, 1),
-                "preview": f"Completed with warning: {result['error'][:80]}",
+                "preview": f"Warning ({backend}): {result['error'][:80]}",
             })
         else:
             broadcast(case_id, {
                 "type": "step_update", "step": 3,
                 "label": "STORM deep research...", "status": "done",
                 "duration_s": round(duration, 1),
-                "preview": f"Article: {len(result['article'] or '')} chars",
+                "preview": f"Article: {len(result['article'] or '')} chars ({backend})",
             })
 
         return {"storm_length": len(result["article"] or ""), "refined_topic": refined_topic}
