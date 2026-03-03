@@ -25,9 +25,6 @@ except ImportError:
 def run_costorm(
     topic: str,
     output_dir: str | None = None,
-    project_id: str | None = None,
-    location: str | None = None,
-    credentials_json: str | None = None,
     serper_api_key: str | None = None,
 ) -> dict:
     """Run Co-STORM collaborative research on a topic.
@@ -43,24 +40,15 @@ def run_costorm(
         result = run_storm(
             topic=topic,
             output_dir=output_dir or settings.COSTORM_OUTPUT_DIR,
-            project_id=project_id,
-            location=location,
-            credentials_json=credentials_json,
             serper_api_key=serper_api_key,
         )
         result["engine"] = "storm_fallback"
         return result
 
     # Co-STORM is available — run it
-    project_id = project_id or settings.GCP_PROJECT_ID
-    location = location or settings.GCP_LOCATION
     serper_api_key = serper_api_key or settings.SERPER_API_KEY
     output_dir = output_dir or settings.COSTORM_OUTPUT_DIR
     timeout_seconds = settings.COSTORM_TIMEOUT_SECONDS
-
-    if credentials_json is None:
-        with open(settings.GCP_SERVICE_ACCOUNT_FILE) as f:
-            credentials_json = f.read()
 
     if len(topic) > 100:
         topic = topic[:100].rsplit(" ", 1)[0]
@@ -84,10 +72,8 @@ def run_costorm(
     from knowledge_storm.storm_wiki import STORMWikiLMConfigs
 
     gemini_lm = LitellmModel(
-        model="vertex_ai/gemini-2.0-flash",
-        vertex_project=project_id,
-        vertex_location=location,
-        vertex_credentials=credentials_json,
+        model="gemini/gemini-2.0-flash",
+        api_key=settings.GEMINI_API_KEY,
         max_tokens=4096,
         temperature=0.7,
     )

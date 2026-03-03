@@ -74,9 +74,6 @@ def _run_storm_inner(runner, topic: str) -> object:
 def run_storm(
     topic: str,
     output_dir: str,
-    project_id: str | None = None,
-    location: str | None = None,
-    credentials_json: str | None = None,
     serper_api_key: str | None = None,
 ) -> dict:
     """Run STORM deep research on a topic.
@@ -86,15 +83,8 @@ def run_storm(
 
     Returns dict with keys: article, url_to_info, error, search_backend.
     """
-    project_id = project_id or settings.GCP_PROJECT_ID
-    location = location or settings.GCP_LOCATION
     serper_api_key = serper_api_key or settings.SERPER_API_KEY
     timeout_seconds = settings.STORM_TIMEOUT_SECONDS
-
-    # Read credentials JSON from service account file
-    if credentials_json is None:
-        with open(settings.GCP_SERVICE_ACCOUNT_FILE) as f:
-            credentials_json = f.read()
 
     # Truncate topic for folder safety
     if len(topic) > 100:
@@ -120,10 +110,8 @@ def run_storm(
     from knowledge_storm.storm_wiki import STORMWikiLMConfigs
 
     gemini_lm = LitellmModel(
-        model="vertex_ai/gemini-2.0-flash",
-        vertex_project=project_id,
-        vertex_location=location,
-        vertex_credentials=credentials_json,
+        model="gemini/gemini-2.0-flash",
+        api_key=settings.GEMINI_API_KEY,
         max_tokens=4096,
         temperature=0.7,
     )

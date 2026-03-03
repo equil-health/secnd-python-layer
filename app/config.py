@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     MEDGEMMA_ENDPOINT_ID: str = ""
     MEDGEMMA_DEDICATED_DOMAIN: str = ""
 
+    # Google AI Studio
+    GEMINI_API_KEY: str = ""
+
     # External APIs
     SERPER_API_KEY: str = ""
     GOOGLE_SEARCH_API_KEY: str = ""

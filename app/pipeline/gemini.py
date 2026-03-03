@@ -1,27 +1,21 @@
-"""Gemini Flash API client — ported from v5 lines 323-352."""
+"""Gemini Flash API client — Google AI Studio REST."""
 
 import time
 import requests
 
 from ..config import settings
-from .medgemma import _get_credentials
 
 
 def call_gemini(prompt: str, max_tokens: int = 2048, temperature: float = 0.3) -> str:
-    """Call Gemini 2.0 Flash via Vertex AI REST API.
+    """Call Gemini 2.0 Flash via Google AI Studio REST API.
 
     3 retries with exponential backoff.
     """
-    creds = _get_credentials()
     url = (
-        f"https://{settings.GCP_LOCATION}-aiplatform.googleapis.com/v1/"
-        f"projects/{settings.GCP_PROJECT_ID}/locations/{settings.GCP_LOCATION}/"
-        f"publishers/google/models/gemini-2.0-flash:generateContent"
+        f"https://generativelanguage.googleapis.com/v1beta/models/"
+        f"gemini-2.0-flash:generateContent?key={settings.GEMINI_API_KEY}"
     )
-    headers = {
-        "Authorization": f"Bearer {creds.token}",
-        "Content-Type": "application/json",
-    }
+    headers = {"Content-Type": "application/json"}
     payload = {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {
