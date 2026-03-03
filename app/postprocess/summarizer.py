@@ -54,6 +54,46 @@ def generate_executive_summary(
     )
 
 
+RESEARCH_SUMMARY_PROMPT = """Write a 3-paragraph executive summary of this research report.
+
+Paragraph 1: What the research topic is, what specialty area it falls under ({specialty}),
+and what the key question or focus of the investigation was.
+Paragraph 2: The most important findings from the literature review, including key evidence
+and any areas of consensus or controversy among researchers.
+Paragraph 3: Implications for clinical practice or future research, and any notable gaps
+in the current evidence base.
+
+Keep it under 250 words. Use clear, professional language suitable for a clinician audience.
+Do NOT use any headers, bullets, or markdown formatting — just 3 paragraphs.
+
+RESEARCH TOPIC: {research_topic}
+SPECIALTY: {specialty}
+SOURCES REVIEWED: {total_sources}
+LITERATURE REVIEW (excerpt): {article_excerpt}
+EVIDENCE REVIEW (excerpt): {evidence_excerpt}"""
+
+
+def generate_research_summary(
+    article: str,
+    evidence_synthesis: str,
+    research_topic: str,
+    specialty: str = "General Medicine",
+    total_sources: int = 0,
+) -> str:
+    """Generate a 3-paragraph research executive summary via Gemini."""
+    return call_gemini(
+        RESEARCH_SUMMARY_PROMPT.format(
+            research_topic=research_topic,
+            specialty=specialty or "General Medicine",
+            total_sources=total_sources,
+            article_excerpt=article[:3000],
+            evidence_excerpt=evidence_synthesis[:2000],
+        ),
+        max_tokens=600,
+        temperature=0.3,
+    )
+
+
 def generate_zebra_summary(
     medgemma_analysis: str,
     evidence_synthesis: str,

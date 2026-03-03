@@ -103,6 +103,60 @@ FALLBACK_CLAIMS = [
 ]
 
 
+RESEARCH_EXTRACTION_PROMPT = """Read this research article and extract the KEY VERIFIABLE CLAIMS that should be checked against literature.
+
+For each claim, provide:
+1. The claim itself (one sentence, specific and verifiable)
+2. A specific search query to find supporting or contradicting evidence (5-8 words)
+
+Focus on:
+- Statistical claims (prevalence, efficacy rates, outcomes)
+- Mechanistic claims (biological pathways, drug mechanisms)
+- Comparative claims (treatment A vs treatment B)
+- Guideline-based claims (recommended practices, diagnostic criteria)
+
+Return EXACTLY this JSON format, nothing else (no markdown backticks):
+{{
+  "primary_topic": "the main research topic being investigated",
+  "claims": [
+    {{
+      "claim": "SGLT2 inhibitors reduce cardiovascular mortality by 20% in heart failure patients",
+      "search_query": "SGLT2 inhibitors cardiovascular mortality heart failure meta-analysis"
+    }}
+  ]
+}}
+
+Extract 8-12 of the most important, verifiable claims.
+
+RESEARCH ARTICLE:
+{analysis}"""
+
+
+def extract_research_claims(article: str) -> dict:
+    """Extract verifiable claims from a research article.
+
+    Returns dict with keys: primary_topic, claims.
+    """
+    raw = call_gemini(
+        RESEARCH_EXTRACTION_PROMPT.format(analysis=article[:6000]),
+        max_tokens=2048,
+        temperature=0.1,
+    )
+
+    raw = re.sub(r"^```json\s*", "", raw.strip())
+    raw = re.sub(r"\s*```$", "", raw)
+
+    try:
+        data = json.loads(raw)
+        primary_topic = data.get("primary_topic", "unknown")
+        claims = data.get("claims", [])
+    except json.JSONDecodeError:
+        primary_topic = "research topic"
+        claims = []
+
+    return {"primary_topic": primary_topic, "claims": claims}
+
+
 def extract_claims(analysis: str, mode: str = "standard") -> dict:
     """Extract verifiable clinical claims from MedGemma analysis.
 

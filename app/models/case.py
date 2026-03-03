@@ -31,6 +31,8 @@ class Case(Base):
     pipeline_type = Column(String(20), default="diagnosis")
     diagnosis_mode = Column(String(20), default="standard")  # "standard" or "zebra"
     research_topic = Column(Text)
+    specialty = Column(String(100))
+    research_intent = Column(String(50))
 
     # Status
     status = Column(String(20), nullable=False, default="submitted")

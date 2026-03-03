@@ -80,6 +80,41 @@ def _build_evidence_context(evidence_results: list, all_references: list) -> str
     return context
 
 
+RESEARCH_SYNTHESIS_PROMPT = """You are a research evidence reviewer. A research pipeline extracted claims from a literature review article and searched for supporting evidence.
+
+YOUR TASK: For each claim, assess whether the literature SUPPORTS, PARTIALLY SUPPORTS, or CONTRADICTS it. Write a structured evidence review.
+
+IMPORTANT — Evidence Quality:
+- Verified papers (found in OpenAlex) carry more weight
+- Landmark papers (100+ citations) are strongest evidence
+- Preprints are not yet peer-reviewed — note this
+- RETRACTED papers MUST be excluded from your conclusions
+
+Format your response as a markdown document with this structure:
+
+## Evidence Review: [{primary_topic}]
+
+### Claim 1: [claim text]
+**Verdict: SUPPORTED / PARTIALLY SUPPORTED / CONTRADICTED / INSUFFICIENT EVIDENCE**
+Evidence: [2-3 sentences synthesizing what the search results show, citing reference numbers like [1], [2]]
+
+### Claim 2: ...
+(repeat for each claim)
+
+## Overall Assessment
+[3-4 sentences on the strength of evidence for the key findings in this research area]
+
+## Research Gaps
+[2-3 sentences identifying areas where evidence is lacking or conflicting]
+
+PRIMARY RESEARCH TOPIC: {primary_topic}
+
+CLAIMS AND SEARCH EVIDENCE:
+{evidence_context}
+
+EVIDENCE REVIEW:"""
+
+
 def synthesize_evidence(
     primary_diagnosis: str,
     evidence_results: list,
@@ -94,6 +129,27 @@ def synthesize_evidence(
     return call_gemini(
         SYNTHESIS_PROMPT.format(
             primary_diagnosis=primary_diagnosis,
+            evidence_context=evidence_context,
+        ),
+        max_tokens=4096,
+        temperature=0.3,
+    )
+
+
+def synthesize_research_evidence(
+    primary_topic: str,
+    evidence_results: list,
+    all_references: list,
+) -> str:
+    """Have Gemini synthesize evidence for research claims.
+
+    Returns evidence synthesis as markdown text.
+    """
+    evidence_context = _build_evidence_context(evidence_results, all_references)
+
+    return call_gemini(
+        RESEARCH_SYNTHESIS_PROMPT.format(
+            primary_topic=primary_topic,
             evidence_context=evidence_context,
         ),
         max_tokens=4096,

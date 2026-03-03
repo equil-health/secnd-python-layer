@@ -37,6 +37,8 @@ class CaseSubmitFreeText(BaseModel):
 class ResearchSubmit(BaseModel):
     research_topic: str = Field(min_length=10)
     additional_context: Optional[str] = None
+    specialty: Optional[str] = None
+    research_intent: Optional[str] = None
 
 
 class FollowUpRequest(BaseModel):
@@ -100,6 +102,7 @@ class ReportResponse(BaseModel):
     executive_summary: Optional[str] = None
     medgemma_analysis: Optional[str] = None
     evidence_claims: list[EvidenceClaim] = []
+    evidence_synthesis: Optional[str] = None
     storm_article: Optional[str] = None
     references: list[Reference] = []
     primary_diagnosis: Optional[str] = None
@@ -110,6 +113,24 @@ class ReportResponse(BaseModel):
     pdf_url: Optional[str] = None
     docx_url: Optional[str] = None
     created_at: datetime
+
+
+class ResearchReportResponse(BaseModel):
+    case_id: UUID
+    specialty: Optional[str] = None
+    research_intent: Optional[str] = None
+    executive_summary: Optional[str] = None
+    evidence_claims: list[EvidenceClaim] = []
+    evidence_synthesis: Optional[str] = None
+    storm_article: Optional[str] = None
+    references: list[Reference] = []
+    total_sources: int = 0
+    hallucination_issues: int = 0
+    verification_stats: Optional[dict] = None
+    report_html: Optional[str] = None
+    pdf_url: Optional[str] = None
+    docx_url: Optional[str] = None
+    created_at: Optional[datetime] = None
 
 
 class FollowUpResponse(BaseModel):

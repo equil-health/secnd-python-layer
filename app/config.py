@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     SERPER_RESULTS_PER_QUERY: int = 5
     STORM_SEARCH_TOP_K: int = 20
     STORM_TIMEOUT_SECONDS: int = 180
+    COSTORM_TIMEOUT_SECONDS: int = 240
+    COSTORM_OUTPUT_DIR: str = "./costorm_output"
     PIPELINE_TIMEOUT_SECONDS: int = 300
 
     # MedASR

@@ -24,10 +24,19 @@ app.config_from_object({
         "pipeline.storm_research": {"queue": "storm_q"},
         "pipeline.verify_storm_citations": {"queue": "search_q"},
         "pipeline.compile_report": {"queue": "report_q"},
-        # Research pipeline
+        # Research pipeline v1
         "pipeline.research_generate_questions": {"queue": "gemini_q"},
         "pipeline.research_storm": {"queue": "storm_q"},
         "pipeline.research_compile_report": {"queue": "report_q"},
+        # Research pipeline v2 (10-step)
+        "pipeline.research_costorm": {"queue": "storm_q"},
+        "pipeline.research_hallucination_guard": {"queue": "gemini_q"},
+        "pipeline.research_extract_claims": {"queue": "gemini_q"},
+        "pipeline.research_search_evidence": {"queue": "search_q"},
+        "pipeline.research_verify_citations": {"queue": "search_q"},
+        "pipeline.research_synthesize_evidence": {"queue": "gemini_q"},
+        "pipeline.research_generate_summary": {"queue": "gemini_q"},
+        "pipeline.research_compile_report_v2": {"queue": "report_q"},
     },
 })
 

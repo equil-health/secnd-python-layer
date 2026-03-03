@@ -40,8 +40,24 @@ async def get_report(case_id: UUID, db: AsyncSession = Depends(get_db)):
     diagnosis_mode = case.diagnosis_mode if case else "standard"
 
     if pipeline_type == "research":
-        # Research pipeline: no MedGemma, no evidence claims
         references = [Reference(**r) for r in (report.references or [])]
+
+        # v2 research pipelines have evidence data
+        is_v2 = bool(case and (case.specialty or case.research_intent))
+        evidence_claims = []
+        hallucination_issues = 0
+
+        if is_v2:
+            for claim_data in (report.evidence_results or []):
+                evidence_claims.append(EvidenceClaim(
+                    claim=claim_data.get("claim", ""),
+                    verdict=claim_data.get("verdict", "UNKNOWN"),
+                    evidence=claim_data.get("evidence", ""),
+                    references=claim_data.get("references", []),
+                ))
+            if report.hallucination_check:
+                hallucination_issues = len(report.hallucination_check.get("issues", []))
+
         return ReportResponse(
             case_id=report.case_id,
             pipeline_type="research",
@@ -49,12 +65,14 @@ async def get_report(case_id: UUID, db: AsyncSession = Depends(get_db)):
             research_topic=case.research_topic if case else None,
             executive_summary=report.executive_summary,
             medgemma_analysis=None,
-            evidence_claims=[],
+            evidence_claims=evidence_claims,
+            evidence_synthesis=report.evidence_synthesis,
             storm_article=report.storm_article_clean,
             references=references,
-            primary_diagnosis=None,
+            primary_diagnosis=report.primary_diagnosis,
             total_sources=report.total_sources or 0,
-            hallucination_issues=0,
+            hallucination_issues=hallucination_issues,
+            verification_stats=report.verification_stats,
             report_html=report.report_html,
             pdf_url=f"/api/cases/{case_id}/report/pdf" if report.report_markdown else None,
             docx_url=f"/api/cases/{case_id}/report/docx" if report.report_markdown else None,

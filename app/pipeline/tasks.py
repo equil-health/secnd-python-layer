@@ -795,7 +795,443 @@ def compile_report(self, prev_result, case_id: str):
 
 
 # ============================================================
-# Research Pipeline (lighter: 4 steps)
+# Research Pipeline v2 (10 steps — full evidence pipeline)
+# ============================================================
+
+def dispatch_research_pipeline_v2(case_id: str):
+    """Start the enhanced 10-step research pipeline as a Celery chain."""
+    pipeline = chain(
+        research_generate_questions.s(None, case_id),   # Step 2 (reused)
+        research_costorm.s(case_id),                     # Step 3
+        research_hallucination_guard.s(case_id),         # Step 4
+        research_extract_claims_task.s(case_id),         # Step 5
+        research_search_evidence.s(case_id),             # Step 6
+        research_verify_citations.s(case_id),            # Step 7
+        research_synthesize_evidence.s(case_id),         # Step 8
+        research_generate_summary.s(case_id),            # Step 9
+        research_compile_report_v2.s(case_id),           # Step 10
+    )
+    pipeline.apply_async()
+
+
+@app.task(bind=True, name="pipeline.research_costorm", soft_time_limit=300, time_limit=360)
+def research_costorm(self, prev_result, case_id: str):
+    """Step 3 (v2): Co-STORM / STORM deep research on the topic."""
+    from celery.exceptions import SoftTimeLimitExceeded
+
+    broadcast(case_id, {
+        "type": "step_update", "step": 3,
+        "label": "Co-STORM deep research...", "status": "running",
+    })
+
+    from .costorm_runner import run_costorm
+    from ..models.report import Report
+
+    session = _get_sync_session()
+    start = time.time()
+    try:
+        refined_topic = prev_result.get("refined_topic", "research topic") if prev_result else "research topic"
+        output_dir = tempfile.mkdtemp(prefix="costorm_research_")
+
+        result = run_costorm(topic=refined_topic, output_dir=output_dir)
+        duration = time.time() - start
+
+        report = session.query(Report).filter_by(case_id=case_id).first()
+        if report:
+            report.storm_article_raw = result["article"]
+            report.storm_url_to_info = result["url_to_info"]
+            session.commit()
+
+        engine = result.get("engine", "unknown")
+        backend = result.get("search_backend", "unknown")
+        if result["error"]:
+            broadcast(case_id, {
+                "type": "step_update", "step": 3,
+                "label": "Co-STORM deep research...", "status": "done",
+                "duration_s": round(duration, 1),
+                "preview": f"Warning ({engine}/{backend}): {result['error'][:80]}",
+            })
+        else:
+            broadcast(case_id, {
+                "type": "step_update", "step": 3,
+                "label": "Co-STORM deep research...", "status": "done",
+                "duration_s": round(duration, 1),
+                "preview": f"Article: {len(result['article'] or '')} chars ({engine}/{backend})",
+            })
+
+        return {"storm_length": len(result["article"] or ""), "refined_topic": refined_topic}
+    except SoftTimeLimitExceeded:
+        duration = time.time() - start
+        broadcast(case_id, {
+            "type": "step_update", "step": 3,
+            "label": "Co-STORM deep research...", "status": "done",
+            "duration_s": round(duration, 1),
+            "preview": "Co-STORM timed out — continuing pipeline",
+        })
+        return {"storm_length": 0, "refined_topic": prev_result.get("refined_topic", "research topic") if prev_result else "research topic"}
+    finally:
+        session.close()
+
+
+@app.task(bind=True, name="pipeline.research_hallucination_guard")
+def research_hallucination_guard(self, prev_result, case_id: str):
+    """Step 4 (v2): Validate STORM article for hallucinations."""
+    broadcast(case_id, {
+        "type": "step_update", "step": 4,
+        "label": "Checking for hallucinations...", "status": "running",
+    })
+
+    from .hallucination_guard import check_research_hallucinations, apply_corrections
+    from ..models.report import Report
+
+    session = _get_sync_session()
+    try:
+        report = session.query(Report).filter_by(case_id=case_id).first()
+        article = report.storm_article_raw or ""
+
+        start = time.time()
+        validation = check_research_hallucinations(article)
+        duration = time.time() - start
+
+        issues = validation.get("issues", [])
+        if issues:
+            corrected = apply_corrections(article, issues)
+            report.storm_article_raw = corrected
+
+        report.hallucination_check = validation
+        session.commit()
+
+        preview = f"{len(issues)} issue(s) flagged and corrected" if issues else "No hallucinations detected"
+
+        broadcast(case_id, {
+            "type": "step_update", "step": 4,
+            "label": "Checking for hallucinations...", "status": "done",
+            "duration_s": round(duration, 1),
+            "preview": preview,
+        })
+
+        return {"hallucinations": len(issues)}
+    finally:
+        session.close()
+
+
+@app.task(bind=True, name="pipeline.research_extract_claims")
+def research_extract_claims_task(self, prev_result, case_id: str):
+    """Step 5 (v2): Extract verifiable claims from STORM article."""
+    broadcast(case_id, {
+        "type": "step_update", "step": 5,
+        "label": "Extracting research claims...", "status": "running",
+    })
+
+    from .claim_extractor import extract_research_claims
+    from ..models.report import Report
+
+    session = _get_sync_session()
+    try:
+        report = session.query(Report).filter_by(case_id=case_id).first()
+        article = report.storm_article_raw or ""
+
+        start = time.time()
+        claims_data = extract_research_claims(article)
+        duration = time.time() - start
+
+        report.extracted_claims = claims_data
+        report.primary_diagnosis = claims_data.get("primary_topic", "research topic")
+        session.commit()
+
+        claims = claims_data.get("claims", [])
+        broadcast(case_id, {
+            "type": "step_update", "step": 5,
+            "label": "Extracting research claims...", "status": "done",
+            "duration_s": round(duration, 1),
+            "preview": f"{len(claims)} verifiable claims extracted",
+        })
+
+        return {"claims_count": len(claims), "primary_topic": claims_data.get("primary_topic", "")}
+    finally:
+        session.close()
+
+
+@app.task(bind=True, name="pipeline.research_search_evidence")
+def research_search_evidence(self, prev_result, case_id: str):
+    """Step 6 (v2): Serper searches each research claim."""
+    broadcast(case_id, {
+        "type": "step_update", "step": 6,
+        "label": "Searching evidence...", "status": "running",
+        "progress": "0/? claims",
+    })
+
+    from .serper import search_serper
+    from ..models.report import Report
+
+    session = _get_sync_session()
+    try:
+        report = session.query(Report).filter_by(case_id=case_id).first()
+        raw_claims = report.extracted_claims or {}
+        claims = raw_claims.get("claims", []) if isinstance(raw_claims, dict) else raw_claims
+
+        start = time.time()
+        all_refs = []
+        ref_counter = 1
+
+        for i, claim in enumerate(claims):
+            broadcast(case_id, {
+                "type": "step_update", "step": 6,
+                "label": "Searching evidence...", "status": "running",
+                "progress": f"{i + 1}/{len(claims)} claims",
+            })
+
+            query = claim.get("search_query", "")
+            if not query:
+                continue
+
+            results = search_serper(query, num_results=settings.SERPER_RESULTS_PER_QUERY)
+
+            claim_refs = []
+            for r in results:
+                ref_id = ref_counter
+                all_refs.append({
+                    "id": ref_id,
+                    "title": r["title"],
+                    "url": r["url"],
+                    "snippet": r["snippet"],
+                    "for_claim": claim.get("claim", "")[:80],
+                })
+                claim_refs.append(ref_id)
+                ref_counter += 1
+
+            claim["references"] = claim_refs
+            claim["search_results"] = results
+
+        duration = time.time() - start
+
+        report.evidence_results = claims
+        session.commit()
+
+        broadcast(case_id, {
+            "type": "step_update", "step": 6,
+            "label": "Searching evidence...", "status": "done",
+            "duration_s": round(duration, 1),
+            "preview": f"{len(all_refs)} sources found",
+        })
+
+        return {"total_refs": len(all_refs), "serper_refs": all_refs}
+    finally:
+        session.close()
+
+
+@app.task(bind=True, name="pipeline.research_verify_citations", soft_time_limit=300, time_limit=360)
+def research_verify_citations(self, prev_result, case_id: str):
+    """Step 7 (v2): Verify Serper references against OpenAlex."""
+    from celery.exceptions import SoftTimeLimitExceeded
+
+    broadcast(case_id, {
+        "type": "step_update", "step": 7,
+        "label": "Verifying citations (OpenAlex)...", "status": "running",
+    })
+
+    from .openalex import OpenAlexVerifier
+    from ..models.report import Report
+
+    session = _get_sync_session()
+    start = time.time()
+    try:
+        report = session.query(Report).filter_by(case_id=case_id).first()
+        serper_refs = prev_result.get("serper_refs", []) if prev_result else []
+
+        verifier = OpenAlexVerifier(settings.OPENALEX_EMAIL, settings.OPENALEX_API_KEY)
+        enriched_refs = verifier.verify_all(serper_refs)
+        duration = time.time() - start
+
+        total = len(enriched_refs)
+        verified = sum(1 for r in enriched_refs if r.get("is_verified"))
+        retracted = sum(1 for r in enriched_refs if r.get("is_retracted"))
+        peer_reviewed = sum(1 for r in enriched_refs if r.get("quality_tier") in ("peer-reviewed", "strong", "landmark"))
+        unverified = sum(1 for r in enriched_refs if r.get("quality_tier") == "unverified")
+        landmark = sum(1 for r in enriched_refs if r.get("quality_tier") == "landmark")
+
+        stats = {
+            "total": total,
+            "verified": verified,
+            "retracted": retracted,
+            "peer_reviewed": peer_reviewed,
+            "unverified": unverified,
+            "landmark": landmark,
+        }
+
+        report.verification_stats = stats
+        session.commit()
+
+        broadcast(case_id, {
+            "type": "step_update", "step": 7,
+            "label": "Verifying citations (OpenAlex)...", "status": "done",
+            "duration_s": round(duration, 1),
+            "preview": f"{verified}/{total} verified, {retracted} retracted",
+        })
+
+        return {"serper_refs": enriched_refs, "verification_stats": stats}
+    except SoftTimeLimitExceeded:
+        try:
+            session.commit()
+        except Exception:
+            pass
+        duration = time.time() - start
+        serper_refs = prev_result.get("serper_refs", []) if prev_result else []
+        broadcast(case_id, {
+            "type": "step_update", "step": 7,
+            "label": "Verifying citations (OpenAlex)...", "status": "done",
+            "duration_s": round(duration, 1),
+            "preview": "Citation verification timed out — continuing with partial results",
+        })
+        return {"serper_refs": serper_refs, "verification_stats": {}}
+    finally:
+        session.close()
+
+
+@app.task(bind=True, name="pipeline.research_synthesize_evidence")
+def research_synthesize_evidence(self, prev_result, case_id: str):
+    """Step 8 (v2): Gemini synthesizes evidence vs research claims."""
+    broadcast(case_id, {
+        "type": "step_update", "step": 8,
+        "label": "Synthesizing evidence...", "status": "running",
+    })
+
+    from .evidence_verifier import synthesize_research_evidence
+    from ..models.report import Report
+
+    session = _get_sync_session()
+    try:
+        report = session.query(Report).filter_by(case_id=case_id).first()
+        serper_refs = prev_result.get("serper_refs", []) if prev_result else []
+
+        start = time.time()
+        synthesis = synthesize_research_evidence(
+            primary_topic=report.primary_diagnosis or "research topic",
+            evidence_results=report.evidence_results or [],
+            all_references=serper_refs,
+        )
+        duration = time.time() - start
+
+        report.evidence_synthesis = synthesis
+        session.commit()
+
+        broadcast(case_id, {
+            "type": "step_update", "step": 8,
+            "label": "Synthesizing evidence...", "status": "done",
+            "duration_s": round(duration, 1),
+        })
+
+        return {"synthesis_length": len(synthesis), "serper_refs": serper_refs}
+    finally:
+        session.close()
+
+
+@app.task(bind=True, name="pipeline.research_generate_summary")
+def research_generate_summary(self, prev_result, case_id: str):
+    """Step 9 (v2): Generate research executive summary."""
+    broadcast(case_id, {
+        "type": "step_update", "step": 9,
+        "label": "Generating executive summary...", "status": "running",
+    })
+
+    from ..postprocess.summarizer import generate_research_summary
+    from ..models.report import Report
+    from ..models.case import Case
+
+    session = _get_sync_session()
+    try:
+        report = session.query(Report).filter_by(case_id=case_id).first()
+        case = session.query(Case).filter_by(id=case_id).first()
+        serper_refs = prev_result.get("serper_refs", []) if prev_result else []
+
+        start = time.time()
+        exec_summary = generate_research_summary(
+            article=report.storm_article_raw or "",
+            evidence_synthesis=report.evidence_synthesis or "",
+            research_topic=case.research_topic or "Research Topic",
+            specialty=case.specialty or "General Medicine",
+            total_sources=len(serper_refs) or report.total_sources or 0,
+        )
+        duration = time.time() - start
+
+        report.executive_summary = exec_summary
+        session.commit()
+
+        broadcast(case_id, {
+            "type": "step_update", "step": 9,
+            "label": "Generating executive summary...", "status": "done",
+            "duration_s": round(duration, 1),
+        })
+
+        return {"summary_length": len(exec_summary), "serper_refs": serper_refs}
+    finally:
+        session.close()
+
+
+@app.task(bind=True, name="pipeline.research_compile_report_v2")
+def research_compile_report_v2(self, prev_result, case_id: str):
+    """Step 10 (v2): Compile enhanced research report."""
+    broadcast(case_id, {
+        "type": "step_update", "step": 10,
+        "label": "Compiling research report...", "status": "running",
+    })
+
+    from ..postprocess.research_report_compiler_v2 import compile_research_report_v2 as _compile_v2
+    from ..models.report import Report
+    from ..models.case import Case
+
+    session = _get_sync_session()
+    try:
+        report = session.query(Report).filter_by(case_id=case_id).first()
+        case = session.query(Case).filter_by(id=case_id).first()
+        serper_refs = prev_result.get("serper_refs", []) if prev_result else []
+
+        start = time.time()
+        compiled = _compile_v2(
+            research_topic=case.research_topic or "Research Topic",
+            specialty=case.specialty,
+            research_intent=case.research_intent,
+            storm_article=report.storm_article_raw,
+            storm_url_to_info=report.storm_url_to_info,
+            evidence_results=report.evidence_results or [],
+            evidence_synthesis=report.evidence_synthesis or "",
+            hallucination_check=report.hallucination_check or {},
+            executive_summary=report.executive_summary or "",
+            serper_refs=serper_refs,
+            verification_stats=report.verification_stats,
+        )
+        duration = time.time() - start
+
+        report.report_markdown = compiled["report_markdown"]
+        report.report_html = compiled["report_html"]
+        report.references = compiled["references"]
+        report.total_sources = compiled["total_sources"]
+        report.storm_article_clean = compiled["storm_article_clean"]
+        report.total_claims = len(report.evidence_results or [])
+
+        case.status = "completed"
+        session.commit()
+
+        broadcast(case_id, {
+            "type": "step_update", "step": 10,
+            "label": "Compiling research report...", "status": "done",
+            "duration_s": round(duration, 1),
+        })
+
+        broadcast(case_id, {
+            "type": "complete",
+            "report_url": f"/api/cases/{case_id}/report",
+            "total_sources": compiled["total_sources"],
+            "executive_summary": (report.executive_summary or "")[:200],
+        })
+
+        return {"report_length": len(compiled["report_markdown"])}
+    finally:
+        session.close()
+
+
+# ============================================================
+# Research Pipeline v1 (lighter: 4 steps — kept for backward compat)
 # ============================================================
 
 def dispatch_research_pipeline(case_id: str):
