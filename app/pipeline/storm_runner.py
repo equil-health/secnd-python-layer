@@ -110,7 +110,7 @@ def run_storm(
     from knowledge_storm.storm_wiki import STORMWikiLMConfigs
 
     gemini_lm = LitellmModel(
-        model="gemini/gemini-2.0-flash",
+        model="gemini/gemini-2.5-flash",
         api_key=settings.GEMINI_API_KEY,
         max_tokens=4096,
         temperature=0.7,

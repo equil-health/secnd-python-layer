@@ -7,13 +7,13 @@ from ..config import settings
 
 
 def call_gemini(prompt: str, max_tokens: int = 2048, temperature: float = 0.3) -> str:
-    """Call Gemini 2.0 Flash via Google AI Studio REST API.
+    """Call Gemini 2.5 Flash via Google AI Studio REST API.
 
     5 retries with aggressive backoff for rate limits.
     """
     url = (
         f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"gemini-2.0-flash:generateContent?key={settings.GEMINI_API_KEY}"
+        f"gemini-2.5-flash:generateContent?key={settings.GEMINI_API_KEY}"
     )
     headers = {"Content-Type": "application/json"}
     payload = {
