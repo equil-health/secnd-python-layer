@@ -22,6 +22,74 @@ except ImportError:
     pass
 
 
+def _extract_costorm_refs(runner) -> dict:
+    """Extract references from a Co-STORM runner's knowledge base.
+
+    Co-STORM stores references in its internal knowledge base rather than
+    writing url_to_info.json to disk.  This function attempts multiple
+    extraction strategies to build a {url: info_dict} mapping.
+
+    Returns an empty dict if extraction fails.
+    """
+    if runner is None:
+        return {}
+
+    url_info = {}
+
+    try:
+        # Strategy 1: runner.to_dict() → knowledge_base → info_uuid_to_info_dict
+        if hasattr(runner, "to_dict"):
+            data = runner.to_dict()
+            kb = data.get("knowledge_base", {})
+            info_dict = kb.get("info_uuid_to_info_dict", {})
+            for _uuid, info in info_dict.items():
+                if isinstance(info, dict):
+                    url = info.get("url", info.get("source_url", ""))
+                    if url and url.startswith("http"):
+                        url_info[url] = {
+                            "title": info.get("title", info.get("name", "")),
+                            "snippets": info.get("snippets", info.get("snippet", [])),
+                        }
+            if url_info:
+                return url_info
+    except Exception:
+        pass
+
+    try:
+        # Strategy 2: direct knowledge_base attribute
+        if hasattr(runner, "knowledge_base"):
+            kb = runner.knowledge_base
+            if hasattr(kb, "info_uuid_to_info_dict"):
+                for _uuid, info in kb.info_uuid_to_info_dict.items():
+                    if isinstance(info, dict):
+                        url = info.get("url", info.get("source_url", ""))
+                    elif hasattr(info, "url"):
+                        url = info.url
+                    else:
+                        continue
+                    if url and url.startswith("http"):
+                        title = info.get("title", "") if isinstance(info, dict) else getattr(info, "title", "")
+                        snippets = info.get("snippets", []) if isinstance(info, dict) else getattr(info, "snippets", [])
+                        url_info[url] = {"title": title, "snippets": snippets}
+            if url_info:
+                return url_info
+    except Exception:
+        pass
+
+    try:
+        # Strategy 3: runner.rm (retrieval module) may track URLs
+        if hasattr(runner, "rm") and hasattr(runner.rm, "url_to_info"):
+            for url, info in runner.rm.url_to_info.items():
+                if url.startswith("http"):
+                    url_info[url] = info if isinstance(info, dict) else {"title": str(info)}
+            if url_info:
+                return url_info
+    except Exception:
+        pass
+
+    return {}
+
+
 def run_costorm(
     topic: str,
     output_dir: str | None = None,
@@ -88,18 +156,21 @@ def run_costorm(
     storm_article = ""
     storm_error = None
     url_to_info = {}
+    runner_instance = None
 
-    def _run_inner():
+    def _run_inner_with_ref():
+        nonlocal runner_instance
         runner = CoSTORMRunner(
             lm_configs=lm_configs,
             rm=rm,
             output_dir=output_dir,
         )
+        runner_instance = runner
         return runner.run(topic=topic)
 
     try:
         with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(_run_inner)
+            future = executor.submit(_run_inner_with_ref)
             try:
                 result = future.result(timeout=timeout_seconds)
             except FuturesTimeoutError:
@@ -143,15 +214,21 @@ def run_costorm(
             if storm_article:
                 break
 
-    # Read url_to_info.json
-    for root, dirs, files in os.walk(output_dir):
-        if "url_to_info.json" in files:
-            try:
-                with open(os.path.join(root, "url_to_info.json")) as f:
-                    url_to_info = json.load(f)
-            except Exception:
-                pass
-            break
+    # Extract references from Co-STORM runner's knowledge base
+    # Co-STORM does NOT write url_to_info.json — refs live in the runner object
+    url_to_info = _extract_costorm_refs(runner_instance)
+
+    # Fallback: try url_to_info.json on disk (in case STORM fallback was used
+    # or a future Co-STORM version writes it)
+    if not url_to_info:
+        for root, dirs, files in os.walk(output_dir):
+            if "url_to_info.json" in files:
+                try:
+                    with open(os.path.join(root, "url_to_info.json")) as f:
+                        url_to_info = json.load(f)
+                except Exception:
+                    pass
+                break
 
     return {
         "article": storm_article,
