@@ -53,6 +53,24 @@ class Settings(BaseSettings):
     UPLOAD_DIR: str = "./uploads"
     MAX_UPLOAD_SIZE_MB: int = 50
 
+    # Pulse — Medical Literature Digest
+    NCBI_API_KEY: str = ""
+    NCBI_EMAIL: str = ""
+    PULSE_ENABLED: bool = True
+    PULSE_MAX_ARTICLES_PER_DIGEST: int = 10
+    PULSE_DEFAULT_FREQUENCY: str = "weekly"
+    PULSE_SCAN_DAYS_BACK: int = 7
+
+    # Auth / JWT
+    JWT_SECRET_KEY: str = "change-me-in-production"
+    JWT_ALGORITHM: str = "HS256"
+    JWT_EXPIRY_HOURS: int = 24
+
+    # Admin seed
+    ADMIN_EMAIL: str = ""
+    ADMIN_PASSWORD: str = ""
+    ADMIN_NAME: str = "Admin"
+
     @property
     def MEDGEMMA_PREDICT_URL(self) -> str:
         return (

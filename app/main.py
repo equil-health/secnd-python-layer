@@ -12,6 +12,9 @@ from .api.routes_reports import router as reports_router
 from .api.routes_upload import router as upload_router
 from .api.routes_research import router as research_router
 from .api.routes_audio import router as audio_router
+from .api.routes_auth import router as auth_router
+from .api.routes_admin import router as admin_router
+from .api.routes_pulse import router as pulse_router
 from .api.websocket import ws_pipeline_status
 
 
@@ -19,6 +22,9 @@ from .api.websocket import ws_pipeline_status
 async def lifespan(app: FastAPI):
     # Startup: initialize database tables
     await init_db()
+    # Auto-seed admin if ADMIN_EMAIL is set
+    from .cli import auto_seed_admin
+    await auto_seed_admin()
     yield
     # Shutdown: nothing to clean up
 
@@ -40,11 +46,14 @@ app.add_middleware(
 )
 
 # REST routes
+app.include_router(auth_router)
+app.include_router(admin_router)
 app.include_router(cases_router)
 app.include_router(reports_router)
 app.include_router(upload_router)
 app.include_router(research_router)
 app.include_router(audio_router)
+app.include_router(pulse_router)
 
 # WebSocket
 app.websocket("/ws/cases/{case_id}/status")(ws_pipeline_status)

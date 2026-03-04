@@ -1,6 +1,7 @@
 """Celery configuration — per spec section 6.1."""
 
 from celery import Celery
+from celery.schedules import crontab
 from app.config import settings
 
 app = Celery("medsecondopinion")
@@ -37,8 +38,23 @@ app.config_from_object({
         "pipeline.research_synthesize_evidence": {"queue": "gemini_q"},
         "pipeline.research_generate_summary": {"queue": "gemini_q"},
         "pipeline.research_compile_report_v2": {"queue": "report_q"},
+        # Pulse — medical literature digest
+        "pulse.generate_all_digests": {"queue": "pulse_q"},
+        "pulse.generate_pulse_digest": {"queue": "pulse_q"},
+    },
+    "beat_schedule": {
+        "pulse-daily-digests": {
+            "task": "pulse.generate_all_digests",
+            "schedule": crontab(hour=6, minute=0),
+            "kwargs": {"frequency_filter": "daily"},
+        },
+        "pulse-weekly-digests": {
+            "task": "pulse.generate_all_digests",
+            "schedule": crontab(hour=6, minute=0, day_of_week="monday"),
+            "kwargs": {"frequency_filter": "weekly"},
+        },
     },
 })
 
 # Auto-discover tasks
-app.autodiscover_tasks(["app.pipeline"])
+app.autodiscover_tasks(["app.pipeline", "app.pulse"])
