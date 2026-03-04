@@ -22,6 +22,7 @@ Format your response as a markdown document with this structure:
 
 ### Claim 1: [claim text]
 **Verdict: SUPPORTED / PARTIALLY SUPPORTED / CONTRADICTED / INSUFFICIENT EVIDENCE**
+**Confidence: [0-100]%**
 Evidence: [2-3 sentences synthesizing what the search results show, citing reference numbers like [1], [2]]
 
 ### Claim 2: ...
@@ -97,6 +98,7 @@ Format your response as a markdown document with this structure:
 
 ### Claim 1: [claim text]
 **Verdict: SUPPORTED / PARTIALLY SUPPORTED / CONTRADICTED / INSUFFICIENT EVIDENCE**
+**Confidence: [0-100]%**
 Evidence: [2-3 sentences synthesizing what the search results show, citing reference numbers like [1], [2]]
 
 ### Claim 2: ...

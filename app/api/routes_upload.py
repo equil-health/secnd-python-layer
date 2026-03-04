@@ -12,6 +12,8 @@ from ..config import settings
 from ..db.database import get_db
 from ..models.case import Case, CaseAttachment
 from ..models.report import PipelineRun
+from ..models.user import User
+from ..auth.security import get_current_user, check_report_limit
 from ..models.schemas import CaseResponse
 from ..pipeline.file_processor import extract_text_from_file
 
@@ -35,12 +37,15 @@ async def submit_with_files(
     case_text: str = Form(...),
     files: list[UploadFile] = File(default=[]),
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """Submit a case with optional file attachments.
 
     Extracts text from uploaded files and appends to raw_case_text
     so the existing pipeline works unchanged.
     """
+    check_report_limit(user)
+
     # Validate files before processing
     for f in files:
         if f.content_type not in ALLOWED_CONTENT_TYPES:
@@ -54,6 +59,7 @@ async def submit_with_files(
         presenting_complaint=case_text[:200],
         raw_case_text=case_text,
         status="processing",
+        user_id=user.id,
     )
     db.add(case)
     await db.flush()  # get case.id
@@ -113,6 +119,11 @@ async def submit_with_files(
     db.add(pipeline_run)
     await db.commit()
     await db.refresh(case)
+
+    # Increment reports used
+    if user.is_demo:
+        user.reports_used = (user.reports_used or 0) + 1
+        await db.commit()
 
     # Dispatch pipeline
     from ..pipeline.tasks import dispatch_pipeline

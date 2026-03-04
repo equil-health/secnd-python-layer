@@ -38,7 +38,7 @@ class Case(Base):
     status = Column(String(20), nullable=False, default="submitted")
 
     # Metadata
-    user_id = Column(UUID(as_uuid=True))
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 

@@ -20,6 +20,8 @@ from ..config import settings
 from ..db.database import get_db
 from ..models.case import Case, CaseAttachment
 from ..models.report import PipelineRun
+from ..models.user import User
+from ..auth.security import get_current_user, check_report_limit
 
 router = APIRouter(prefix="/api/cases", tags=["audio"])
 
@@ -47,6 +49,7 @@ async def submit_audio(
     question: str = Form(None),
     mode: str = Form("standard"),
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """Submit an audio file for MedASR transcription + diagnosis pipeline.
 
@@ -56,6 +59,8 @@ async def submit_audio(
     3. Gemini structuring (sync, ~3-5s)
     4-11. Existing diagnosis pipeline (async via Celery)
     """
+    check_report_limit(user)
+
     # --- Validate file type ---
     filename = audio.filename or "audio.wav"
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
@@ -77,6 +82,7 @@ async def submit_audio(
         status="processing",
         pipeline_type="diagnosis",
         diagnosis_mode=mode if mode in ("standard", "zebra") else "standard",
+        user_id=user.id,
     )
     db.add(case)
     await db.flush()
@@ -182,6 +188,11 @@ async def submit_audio(
         case.lab_results = lab_results
 
     await db.commit()
+
+    # Increment reports used
+    if user.is_demo:
+        user.reports_used = (user.reports_used or 0) + 1
+        await db.commit()
 
     # --- Dispatch existing pipeline (steps 4-11 = existing steps 2-9) ---
     from ..pipeline.tasks import dispatch_pipeline

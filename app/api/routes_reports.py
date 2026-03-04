@@ -2,7 +2,9 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,6 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..db.database import get_db
 from ..models.report import Report, FollowUp
 from ..models.case import Case
+from ..models.user import User
+from ..auth.security import get_current_user, decode_token
 from ..models.schemas import (
     ReportResponse,
     EvidenceClaim,
@@ -21,21 +25,47 @@ from ..models.schemas import (
 router = APIRouter(prefix="/api/cases", tags=["reports"])
 
 
+async def _get_user_from_token(token: Optional[str], db: AsyncSession) -> User:
+    """Resolve user from a raw JWT token (for download endpoints)."""
+    if not token:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    payload = decode_token(token)
+    user_id = payload.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user or not user.is_active:
+        raise HTTPException(status_code=401, detail="User not found or inactive")
+    return user
+
+
+async def _verify_case_owner(case_id: UUID, user: User, db: AsyncSession) -> Case:
+    """Return case if found and owned; raise 404/403 otherwise."""
+    result = await db.execute(select(Case).where(Case.id == case_id))
+    case = result.scalar_one_or_none()
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    if user.role != "admin" and case.user_id != user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    return case
+
+
 @router.get("/{case_id}/report", response_model=ReportResponse)
-async def get_report(case_id: UUID, db: AsyncSession = Depends(get_db)):
+async def get_report(
+    case_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     """GET /api/cases/{id}/report — Get the compiled report."""
+    case = await _verify_case_owner(case_id, user, db)
+
     result = await db.execute(
         select(Report).where(Report.case_id == case_id)
     )
     report = result.scalar_one_or_none()
     if not report:
         raise HTTPException(status_code=404, detail="Report not found")
-
-    # Look up the case to check pipeline type
-    case_result = await db.execute(
-        select(Case).where(Case.id == case_id)
-    )
-    case = case_result.scalar_one_or_none()
     pipeline_type = case.pipeline_type if case else "diagnosis"
     diagnosis_mode = case.diagnosis_mode if case else "standard"
 
@@ -116,8 +146,10 @@ async def get_report(case_id: UUID, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/{case_id}/report/html")
-async def get_report_html(case_id: UUID, db: AsyncSession = Depends(get_db)):
+async def get_report_html(case_id: UUID, token: Optional[str] = Query(None), db: AsyncSession = Depends(get_db)):
     """GET /api/cases/{id}/report/html — Styled standalone HTML."""
+    user = await _get_user_from_token(token, db)
+    await _verify_case_owner(case_id, user, db)
     result = await db.execute(
         select(Report).where(Report.case_id == case_id)
     )
@@ -140,8 +172,10 @@ blockquote {{ border-left: 4px solid #e53e3e; padding: 1rem; background: #fff5f5
 
 
 @router.get("/{case_id}/report/pdf")
-async def get_report_pdf(case_id: UUID, db: AsyncSession = Depends(get_db)):
+async def get_report_pdf(case_id: UUID, token: Optional[str] = Query(None), db: AsyncSession = Depends(get_db)):
     """GET /api/cases/{id}/report/pdf — Download as PDF."""
+    user = await _get_user_from_token(token, db)
+    await _verify_case_owner(case_id, user, db)
     result = await db.execute(
         select(Report).where(Report.case_id == case_id)
     )
@@ -160,8 +194,10 @@ async def get_report_pdf(case_id: UUID, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/{case_id}/report/docx")
-async def get_report_docx(case_id: UUID, db: AsyncSession = Depends(get_db)):
+async def get_report_docx(case_id: UUID, token: Optional[str] = Query(None), db: AsyncSession = Depends(get_db)):
     """GET /api/cases/{id}/report/docx — Download as DOCX."""
+    user = await _get_user_from_token(token, db)
+    await _verify_case_owner(case_id, user, db)
     result = await db.execute(
         select(Report).where(Report.case_id == case_id)
     )
@@ -184,8 +220,10 @@ async def ask_followup(
     case_id: UUID,
     body: FollowUpRequest,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """POST /api/cases/{id}/followup — Ask a follow-up question about the report."""
+    await _verify_case_owner(case_id, user, db)
     result = await db.execute(
         select(Report).where(Report.case_id == case_id)
     )

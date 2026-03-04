@@ -9,6 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..db.database import get_db
 from ..models.case import Case
 from ..models.report import PipelineRun
+from ..models.user import User
+from ..auth.security import get_current_user, check_report_limit
 from ..models.schemas import (
     CaseSubmitStructured,
     CaseSubmitFreeText,
@@ -23,8 +25,14 @@ router = APIRouter(prefix="/api/cases", tags=["cases"])
 
 
 @router.post("", status_code=201, response_model=CaseResponse)
-async def submit_case(body: CaseSubmitStructured, db: AsyncSession = Depends(get_db)):
+async def submit_case(
+    body: CaseSubmitStructured,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     """POST /api/cases — Submit a structured case for analysis."""
+    check_report_limit(user)
+
     mode = body.mode or "standard"
     case = Case(
         patient_age=body.patient_age,
@@ -40,6 +48,7 @@ async def submit_case(body: CaseSubmitStructured, db: AsyncSession = Depends(get
         specific_question=body.specific_question,
         diagnosis_mode=mode,
         status="processing",
+        user_id=user.id,
     )
     db.add(case)
     await db.flush()
@@ -57,6 +66,11 @@ async def submit_case(body: CaseSubmitStructured, db: AsyncSession = Depends(get
     await db.commit()
     await db.refresh(case)
 
+    # Increment reports used
+    if user.is_demo:
+        user.reports_used = (user.reports_used or 0) + 1
+        await db.commit()
+
     # Dispatch pipeline (Celery)
     from ..pipeline.tasks import dispatch_pipeline
     dispatch_pipeline(str(case.id))
@@ -65,7 +79,7 @@ async def submit_case(body: CaseSubmitStructured, db: AsyncSession = Depends(get
 
 
 @router.post("/parse")
-async def parse_free_text(body: CaseSubmitFreeText):
+async def parse_free_text(body: CaseSubmitFreeText, user: User = Depends(get_current_user)):
     """POST /api/cases/parse — Parse free-text case into structured fields.
 
     Uses Gemini to extract structured data from pasted clinical text.
@@ -110,7 +124,7 @@ CLINICAL TEXT:
 
 
 @router.get("/{case_id}")
-async def get_case(case_id: UUID, db: AsyncSession = Depends(get_db)):
+async def get_case(case_id: UUID, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     """GET /api/cases/{id} — Get case with pipeline status."""
     result = await db.execute(select(Case).where(Case.id == case_id))
     case = result.scalar_one_or_none()
@@ -146,17 +160,21 @@ async def list_cases(
     page: int = 1,
     per_page: int = 20,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    """GET /api/cases — List all cases with pagination."""
+    """GET /api/cases — List cases with pagination. Users see own; admins see all."""
     offset = (page - 1) * per_page
 
+    base_filter = True if user.role == "admin" else (Case.user_id == user.id)
+
     # Total count
-    count_result = await db.execute(select(func.count(Case.id)))
+    count_result = await db.execute(select(func.count(Case.id)).where(base_filter))
     total = count_result.scalar()
 
     # Fetch page
     result = await db.execute(
         select(Case)
+        .where(base_filter)
         .order_by(Case.created_at.desc())
         .offset(offset)
         .limit(per_page)

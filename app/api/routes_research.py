@@ -7,6 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..db.database import get_db
 from ..models.case import Case
 from ..models.report import PipelineRun
+from ..models.user import User
+from ..auth.security import get_current_user, check_report_limit
 from ..models.schemas import ResearchSubmit, ResearchConfirm, CaseResponse
 
 router = APIRouter(prefix="/api/research", tags=["research"])
@@ -46,7 +48,11 @@ def _validate_topic(topic: str, specialty: str = "") -> dict | None:
 
 
 @router.post("", status_code=201, response_model=CaseResponse)
-async def submit_research(body: ResearchSubmit, db: AsyncSession = Depends(get_db)):
+async def submit_research(
+    body: ResearchSubmit,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     """POST /api/research — Submit a research topic for STORM analysis.
 
     If specialty or research_intent is provided, dispatches the enhanced
@@ -54,6 +60,8 @@ async def submit_research(body: ResearchSubmit, db: AsyncSession = Depends(get_d
 
     Returns 409 if the topic is ambiguous and needs user confirmation.
     """
+    check_report_limit(user)
+
     # Domain validation gate
     disambiguation = _validate_topic(body.research_topic, body.specialty or "")
     if disambiguation is not None:
@@ -69,6 +77,7 @@ async def submit_research(body: ResearchSubmit, db: AsyncSession = Depends(get_d
         specialty=body.specialty,
         research_intent=body.research_intent,
         status="processing",
+        user_id=user.id,
     )
     db.add(case)
     await db.flush()
@@ -87,6 +96,10 @@ async def submit_research(body: ResearchSubmit, db: AsyncSession = Depends(get_d
     await db.commit()
     await db.refresh(case)
 
+    # Increment reports used
+    if user.is_demo:
+        user.reports_used = (user.reports_used or 0) + 1
+
     if use_v2:
         from ..pipeline.tasks import dispatch_research_pipeline_v2
         dispatch_research_pipeline_v2(str(case.id))
@@ -98,12 +111,18 @@ async def submit_research(body: ResearchSubmit, db: AsyncSession = Depends(get_d
 
 
 @router.post("/confirm", status_code=201, response_model=CaseResponse)
-async def confirm_research(body: ResearchConfirm, db: AsyncSession = Depends(get_db)):
+async def confirm_research(
+    body: ResearchConfirm,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     """POST /api/research/confirm — Submit a disambiguated research topic.
 
     Called after the user confirms the medical interpretation from the
     disambiguation card.  Skips validation (user already confirmed).
     """
+    check_report_limit(user)
+
     use_v2 = bool(body.specialty or body.research_intent)
 
     # Audit trail: record original topic before disambiguation
@@ -117,6 +136,7 @@ async def confirm_research(body: ResearchConfirm, db: AsyncSession = Depends(get
         specialty=body.specialty,
         research_intent=body.research_intent,
         status="processing",
+        user_id=user.id,
     )
     db.add(case)
     await db.flush()
@@ -134,6 +154,11 @@ async def confirm_research(body: ResearchConfirm, db: AsyncSession = Depends(get
     db.add(pipeline_run)
     await db.commit()
     await db.refresh(case)
+
+    # Increment reports used
+    if user.is_demo:
+        user.reports_used = (user.reports_used or 0) + 1
+        await db.commit()
 
     if use_v2:
         from ..pipeline.tasks import dispatch_research_pipeline_v2

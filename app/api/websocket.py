@@ -2,10 +2,11 @@
 
 import json
 
-from fastapi import WebSocket, WebSocketDisconnect
+from fastapi import WebSocket, WebSocketDisconnect, Query
 import redis.asyncio as aioredis
 
 from ..config import settings
+from ..auth.security import decode_token
 
 
 class ConnectionManager:
@@ -35,7 +36,22 @@ manager = ConnectionManager()
 
 
 async def ws_pipeline_status(websocket: WebSocket, case_id: str):
-    """WebSocket endpoint: subscribe to pipeline status for a case."""
+    """WebSocket endpoint: subscribe to pipeline status for a case.
+
+    Requires ?token=<JWT> query param for authentication.
+    """
+    # Authenticate via query param
+    token = websocket.query_params.get("token")
+    if not token:
+        await websocket.close(code=4001, reason="Missing authentication token")
+        return
+
+    try:
+        decode_token(token)
+    except Exception:
+        await websocket.close(code=4001, reason="Invalid or expired token")
+        return
+
     await manager.connect(case_id, websocket)
 
     r = aioredis.from_url(settings.REDIS_URL)
