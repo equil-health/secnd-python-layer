@@ -41,6 +41,14 @@ class ResearchSubmit(BaseModel):
     research_intent: Optional[str] = None
 
 
+class ResearchConfirm(BaseModel):
+    original_topic: str = Field(min_length=10)
+    confirmed_topic: str = Field(min_length=10)
+    specialty: Optional[str] = None
+    research_intent: Optional[str] = None
+    confirmed_as_medical: bool = True
+
+
 class FollowUpRequest(BaseModel):
     question: str = Field(min_length=5)
 

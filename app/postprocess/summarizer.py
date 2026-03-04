@@ -1,6 +1,7 @@
 """Executive summary generation via Gemini — NEW (from spec)."""
 
 from ..pipeline.gemini import call_gemini
+from ..pipeline.prompts import build_medical_prompt
 
 ZEBRA_SUMMARY_PROMPT = """Write a 3-paragraph executive summary of this rare disease (zebra) analysis.
 
@@ -81,7 +82,7 @@ def generate_research_summary(
     total_sources: int = 0,
 ) -> str:
     """Generate a 3-paragraph research executive summary via Gemini."""
-    return call_gemini(
+    wrapped_prompt = build_medical_prompt(
         RESEARCH_SUMMARY_PROMPT.format(
             research_topic=research_topic,
             specialty=specialty or "General Medicine",
@@ -89,6 +90,11 @@ def generate_research_summary(
             article_excerpt=article[:3000],
             evidence_excerpt=evidence_synthesis[:2000],
         ),
+        research_topic=research_topic,
+        specialty=specialty or "General Medicine",
+    )
+    return call_gemini(
+        wrapped_prompt,
         max_tokens=600,
         temperature=0.3,
     )

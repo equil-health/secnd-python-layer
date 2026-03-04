@@ -4,6 +4,7 @@ Ported from v5 lines 686-729.
 """
 
 from .gemini import call_gemini
+from .prompts import build_medical_prompt
 
 SYNTHESIS_PROMPT = """You are a medical evidence reviewer. A specialist AI (MedGemma) analyzed a clinical case and made several diagnostic claims. We searched medical literature for each claim.
 
@@ -126,11 +127,14 @@ def synthesize_evidence(
     """
     evidence_context = _build_evidence_context(evidence_results, all_references)
 
-    return call_gemini(
+    wrapped_prompt = build_medical_prompt(
         SYNTHESIS_PROMPT.format(
             primary_diagnosis=primary_diagnosis,
             evidence_context=evidence_context,
-        ),
+        )
+    )
+    return call_gemini(
+        wrapped_prompt,
         max_tokens=4096,
         temperature=0.3,
     )
@@ -147,11 +151,14 @@ def synthesize_research_evidence(
     """
     evidence_context = _build_evidence_context(evidence_results, all_references)
 
-    return call_gemini(
+    wrapped_prompt = build_medical_prompt(
         RESEARCH_SYNTHESIS_PROMPT.format(
             primary_topic=primary_topic,
             evidence_context=evidence_context,
-        ),
+        )
+    )
+    return call_gemini(
+        wrapped_prompt,
         max_tokens=4096,
         temperature=0.3,
     )

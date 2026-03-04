@@ -4,6 +4,7 @@ import json
 import re
 
 from .gemini import call_gemini
+from .prompts import build_medical_prompt
 
 ZEBRA_EXTRACTION_PROMPT = """Read this clinical analysis focusing on RARE DISEASE (zebra) hypotheses.
 
@@ -137,8 +138,11 @@ def extract_research_claims(article: str) -> dict:
 
     Returns dict with keys: primary_topic, claims.
     """
+    wrapped_prompt = build_medical_prompt(
+        RESEARCH_EXTRACTION_PROMPT.format(analysis=article[:6000])
+    )
     raw = call_gemini(
-        RESEARCH_EXTRACTION_PROMPT.format(analysis=article[:6000]),
+        wrapped_prompt,
         max_tokens=2048,
         temperature=0.1,
     )

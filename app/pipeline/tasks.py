@@ -962,6 +962,7 @@ def research_search_evidence(self, prev_result, case_id: str):
     })
 
     from .serper import search_serper
+    from .prompts import MEDICAL_SEARCH_SUFFIX, MEDICAL_KEYWORD_SUFFIX
     from ..models.report import Report
 
     session = _get_sync_session()
@@ -985,7 +986,9 @@ def research_search_evidence(self, prev_result, case_id: str):
             if not query:
                 continue
 
-            results = search_serper(query, num_results=settings.SERPER_RESULTS_PER_QUERY)
+            # Append medical keywords to the query and use medical site filter
+            query = f"{query} {MEDICAL_KEYWORD_SUFFIX}"
+            results = search_serper(query, num_results=settings.SERPER_RESULTS_PER_QUERY, query_suffix=MEDICAL_SEARCH_SUFFIX)
 
             claim_refs = []
             for r in results:
@@ -1253,6 +1256,7 @@ def research_generate_questions(self, prev_result, case_id: str):
     })
 
     from .gemini import call_gemini
+    from .prompts import build_medical_prompt
     from ..models.case import Case
 
     session = _get_sync_session()
@@ -1260,10 +1264,12 @@ def research_generate_questions(self, prev_result, case_id: str):
         case = session.query(Case).filter_by(id=case_id).first()
         topic = case.research_topic or ""
         context = case.raw_case_text or ""
+        specialty = case.specialty or ""
 
-        prompt = f"""You are a research assistant. Given the following research topic, generate:
+        step_instruction = f"""You are a research assistant. Given the following research topic, generate:
 1. A refined, specific topic suitable for deep literature research (1 sentence)
 2. 5-7 focused research questions that would comprehensively explore this topic
+3. A coherence check: does the specialty "{specialty}" align with the research topic? If not, explain the mismatch.
 
 Topic: {topic}
 {f"Additional context: {context}" if context else ""}
@@ -1271,8 +1277,12 @@ Topic: {topic}
 Return JSON only:
 {{
     "refined_topic": "...",
-    "questions": ["question 1", "question 2", ...]
+    "questions": ["question 1", "question 2", ...],
+    "coherence_ok": true/false,
+    "coherence_warning": "null or explanation if specialty does not match topic"
 }}"""
+
+        prompt = build_medical_prompt(step_instruction, topic, specialty)
 
         start = time.time()
         import json as _json

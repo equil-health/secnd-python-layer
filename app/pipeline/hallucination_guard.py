@@ -7,6 +7,7 @@ import json
 import re
 
 from .gemini import call_gemini
+from .prompts import build_medical_prompt
 
 VALIDATION_PROMPT = """You are a medical fact-checker. A medical AI (MedGemma 4B) generated the analysis below.
 Small language models sometimes hallucinate non-existent tests, antibodies, or scoring systems.
@@ -89,8 +90,11 @@ def check_research_hallucinations(article: str) -> dict:
 
     Returns dict with keys: hallucinations_found, issues, validated_clean.
     """
+    wrapped_prompt = build_medical_prompt(
+        RESEARCH_VALIDATION_PROMPT.format(analysis=article[:8000])
+    )
     raw = call_gemini(
-        RESEARCH_VALIDATION_PROMPT.format(analysis=article[:8000]),
+        wrapped_prompt,
         max_tokens=2048,
         temperature=0.1,
     )
