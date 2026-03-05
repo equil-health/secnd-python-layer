@@ -85,7 +85,9 @@ def generate_pulse_digest(self, user_id: str, skip_cache: bool = False):
             logger.warning(f"Pulse: no preferences found for user {user_id}")
             return {"status": "skipped", "reason": "no_preferences"}
 
-        if not pref.is_enabled:
+        if not pref.is_enabled and not skip_cache:
+            # skip_cache=True means manual "Generate Now" — always run
+            # is_enabled=False only blocks scheduled (beat) digests
             return {"status": "skipped", "reason": "disabled"}
 
         logger.info(
