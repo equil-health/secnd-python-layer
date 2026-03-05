@@ -80,6 +80,7 @@ def scan_for_articles(
     enabled_journals: list[str] | None = None,
     days_back: int | None = None,
     max_articles: int | None = None,
+    skip_cache: bool = False,
 ) -> list[dict]:
     """Orchestrate article discovery: search + fetch + grade + score.
 
@@ -113,7 +114,7 @@ def scan_for_articles(
 
     # Search
     fetcher = AbstractFetcher()
-    pmids = fetcher.search_pubmed(query, date_start, date_end, max_results=max_articles * 2)
+    pmids = fetcher.search_pubmed(query, date_start, date_end, max_results=max_articles * 2, skip_cache=skip_cache)
 
     if not pmids:
         logger.info("No PMIDs found for query")

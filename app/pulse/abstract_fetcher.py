@@ -49,7 +49,7 @@ class AbstractFetcher:
 
     # ── E-Search ─────────────────────────────────────────────────
 
-    def search_pubmed(self, query: str, date_start: str, date_end: str, max_results: int = 20) -> list[str]:
+    def search_pubmed(self, query: str, date_start: str, date_end: str, max_results: int = 20, skip_cache: bool = False) -> list[str]:
         """Search PubMed and return list of PMIDs.
 
         Args:
@@ -57,11 +57,13 @@ class AbstractFetcher:
             date_start: YYYY/MM/DD format
             date_end: YYYY/MM/DD format
             max_results: maximum number of results
+            skip_cache: bypass Redis cache (used after preference changes)
         """
         cache_key = f"pulse:search:{hashlib.md5(f'{query}:{date_start}:{date_end}:{max_results}'.encode()).hexdigest()}"
-        cached = _get_redis().get(cache_key)
-        if cached:
-            return json.loads(cached)
+        if not skip_cache:
+            cached = _get_redis().get(cache_key)
+            if cached:
+                return json.loads(cached)
 
         params = {
             **self._pubmed_params(),

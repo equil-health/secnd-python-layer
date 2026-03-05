@@ -142,7 +142,7 @@ async def trigger_digest(
         raise HTTPException(status_code=400, detail="Set your Pulse preferences first")
 
     from ..pulse.tasks import generate_pulse_digest
-    generate_pulse_digest.delay(str(user.id))
+    generate_pulse_digest.apply_async(args=[str(user.id)], kwargs={"skip_cache": True})
 
     return {"status": "accepted", "message": "Digest generation started"}
 

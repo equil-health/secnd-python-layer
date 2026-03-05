@@ -61,10 +61,14 @@ def generate_all_digests(self, frequency_filter: str = "daily"):
 
 
 @app.task(bind=True, name="pulse.generate_pulse_digest", soft_time_limit=240)
-def generate_pulse_digest(self, user_id: str):
+def generate_pulse_digest(self, user_id: str, skip_cache: bool = False):
     """Generate a full Pulse digest for a single user.
 
     Pipeline: load prefs → scan PubMed → fetch abstracts → generate TL;DRs → save to DB.
+
+    Args:
+        user_id: UUID of the user
+        skip_cache: bypass PubMed search cache (True for manual "Generate Now")
     """
     if not settings.PULSE_ENABLED:
         return {"status": "skipped", "reason": "pulse_disabled"}
@@ -107,6 +111,7 @@ def generate_pulse_digest(self, user_id: str):
             enabled_journals=pref.enabled_journals,
             days_back=settings.PULSE_SCAN_DAYS_BACK,
             max_articles=settings.PULSE_MAX_ARTICLES_PER_DIGEST,
+            skip_cache=skip_cache,
         )
 
         if not articles:
