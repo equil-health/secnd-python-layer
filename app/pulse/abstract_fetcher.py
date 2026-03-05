@@ -197,15 +197,18 @@ class AbstractFetcher:
                 pd_elem = journal_elem.find(".//PubDate") if journal_elem is not None else None
                 if pd_elem is not None:
                     year = pd_elem.findtext("Year", "")
-                    month = pd_elem.findtext("Month", "01")
-                    day = pd_elem.findtext("Day", "01")
+                    month_raw = pd_elem.findtext("Month")
+                    day_raw = pd_elem.findtext("Day")
                     # Month might be text like "Jan"
                     month_map = {"Jan": "01", "Feb": "02", "Mar": "03", "Apr": "04",
                                  "May": "05", "Jun": "06", "Jul": "07", "Aug": "08",
                                  "Sep": "09", "Oct": "10", "Nov": "11", "Dec": "12"}
-                    month = month_map.get(month, month)
-                    if year:
+                    if year and month_raw:
+                        month = month_map.get(month_raw, month_raw)
+                        day = day_raw if day_raw else "15"  # mid-month estimate when day is missing
                         pub_date = f"{year}-{month.zfill(2)}-{day.zfill(2)}"
+                    elif year:
+                        pub_date = f"{year}-01-01"
 
                 # Publication types
                 pub_types = []
