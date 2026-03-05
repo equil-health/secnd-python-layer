@@ -60,10 +60,14 @@ class AbstractFetcher:
             skip_cache: bypass Redis cache (used after preference changes)
         """
         cache_key = f"pulse:search:{hashlib.md5(f'{query}:{date_start}:{date_end}:{max_results}'.encode()).hexdigest()}"
+        if skip_cache:
+            logger.info(f"Pulse E-Search: skipping cache (manual generate)")
         if not skip_cache:
             cached = _get_redis().get(cache_key)
             if cached:
+                logger.info(f"Pulse E-Search: cache HIT for key {cache_key[:20]}...")
                 return json.loads(cached)
+            logger.info(f"Pulse E-Search: cache MISS for key {cache_key[:20]}...")
 
         params = {
             **self._pubmed_params(),

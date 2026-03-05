@@ -25,8 +25,8 @@ def _get_sync_session() -> Session:
         db_url = settings.DATABASE_URL.replace("+asyncpg", "+psycopg2").replace("postgresql://", "postgresql+psycopg2://")
         if "psycopg2+psycopg2" in db_url:
             db_url = db_url.replace("psycopg2+psycopg2", "psycopg2")
-        _sync_engine = create_engine(db_url)
-        _SessionLocal = sessionmaker(bind=_sync_engine)
+        _sync_engine = create_engine(db_url, pool_pre_ping=True)
+        _SessionLocal = sessionmaker(bind=_sync_engine, expire_on_commit=True)
     return _SessionLocal()
 
 
@@ -87,6 +87,12 @@ def generate_pulse_digest(self, user_id: str, skip_cache: bool = False):
 
         if not pref.is_enabled:
             return {"status": "skipped", "reason": "disabled"}
+
+        logger.info(
+            f"Pulse: generating for user {user_id} — "
+            f"specialty={pref.specialty}, topics={pref.topics}, "
+            f"journals={pref.enabled_journals}, skip_cache={skip_cache}"
+        )
 
         # Create digest record
         now = datetime.now(timezone.utc)

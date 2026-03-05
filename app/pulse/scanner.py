@@ -104,6 +104,7 @@ def scan_for_articles(
         if journal_names:
             query = f"({query}) AND ({' OR '.join(journal_names)})"
 
+    logger.info(f"Pulse scan — specialty={specialty}, topics={topics}, skip_cache={skip_cache}")
     logger.info(f"Pulse scan query: {query}")
 
     # Date range
@@ -115,6 +116,7 @@ def scan_for_articles(
     # Search
     fetcher = AbstractFetcher()
     pmids = fetcher.search_pubmed(query, date_start, date_end, max_results=max_articles * 2, skip_cache=skip_cache)
+    logger.info(f"Pulse scan — got {len(pmids)} PMIDs (skip_cache={skip_cache})")
 
     if not pmids:
         logger.info("No PMIDs found for query")
