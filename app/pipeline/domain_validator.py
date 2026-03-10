@@ -135,9 +135,9 @@ def check_pgvector_fast_pass(topic: str, threshold: float = 0.75) -> bool:
         with engine.connect() as conn:
             row = conn.execute(
                 text(
-                    "SELECT 1 - (embedding <=> :emb::vector) AS similarity "
+                    "SELECT 1 - (embedding <=> CAST(:emb AS vector)) AS similarity "
                     "FROM medical_topic_embeddings "
-                    "ORDER BY embedding <=> :emb::vector "
+                    "ORDER BY embedding <=> CAST(:emb AS vector) "
                     "LIMIT 1"
                 ),
                 {"emb": emb_str},

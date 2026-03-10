@@ -127,7 +127,7 @@ def seed_embeddings():
             conn.execute(
                 text(
                     "INSERT INTO medical_topic_embeddings (topic, embedding) "
-                    "VALUES (:topic, :emb::vector) "
+                    "VALUES (:topic, CAST(:emb AS vector)) "
                     "ON CONFLICT (topic) DO UPDATE SET embedding = EXCLUDED.embedding"
                 ),
                 {"topic": topic, "emb": emb_str},
