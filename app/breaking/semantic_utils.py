@@ -4,7 +4,7 @@ Semantic matching utilities for SECND Pulse v2.
 Used by: breaking_ranker.py, breaking_store.py, routes_breaking.py,
          domain_validator.py, claim_extractor.py (research pipeline)
 
-Embedding model: text-embedding-004 via Google AI Studio REST API
+Embedding model: gemini-embedding-001 via Google AI Studio REST API
                  (same GEMINI_API_KEY, no Vertex AI needed)
 Storage: pgvector on existing PostgreSQL instance.
 """
@@ -18,13 +18,16 @@ from ..config import settings
 
 logger = logging.getLogger(__name__)
 
+EMBED_MODEL = "gemini-embedding-001"
+EMBED_DIMENSIONS = 768  # pgvector column is vector(768); model default is 3072
+
 EMBED_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    "text-embedding-004:embedContent"
+    f"https://generativelanguage.googleapis.com/v1beta/models/"
+    f"{EMBED_MODEL}:embedContent"
 )
 BATCH_EMBED_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    "text-embedding-004:batchEmbedContents"
+    f"https://generativelanguage.googleapis.com/v1beta/models/"
+    f"{EMBED_MODEL}:batchEmbedContents"
 )
 
 
@@ -34,8 +37,9 @@ def get_embedding(text: str) -> list[float]:
     """Generate embedding for a single text string via Google AI Studio."""
     url = f"{EMBED_URL}?key={settings.GEMINI_API_KEY}"
     payload = {
-        "model": "models/text-embedding-004",
+        "model": f"models/{EMBED_MODEL}",
         "content": {"parts": [{"text": text[:2000]}]},
+        "outputDimensionality": EMBED_DIMENSIONS,
     }
 
     for attempt in range(3):
@@ -80,8 +84,9 @@ def _embed_batch_chunk(texts: list[str]) -> list[list[float]]:
     payload = {
         "requests": [
             {
-                "model": "models/text-embedding-004",
+                "model": f"models/{EMBED_MODEL}",
                 "content": {"parts": [{"text": t[:2000]}]},
+                "outputDimensionality": EMBED_DIMENSIONS,
             }
             for t in texts
         ],
