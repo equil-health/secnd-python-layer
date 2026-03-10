@@ -8,10 +8,12 @@ time_filter="d" restricts to last 24 hours.
 import hashlib
 import json
 import logging
+import time
 import requests
 import redis
 
 from ..config import settings
+from ..usage_tracker import tracker
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +67,9 @@ def fetch_breaking_headlines(
             pass
 
     headlines = []
+    start = time.time()
+    status = "success"
+    error_msg = None
     try:
         resp = requests.post(
             "https://google.serper.dev/news",
@@ -92,12 +97,23 @@ def fetch_breaking_headlines(
                     "specialty": specialty,
                 })
         else:
-            logger.error(
-                f"Serper news error for {specialty}: "
-                f"HTTP {resp.status_code} {resp.text[:200]}"
-            )
+            status = "error"
+            error_msg = f"HTTP {resp.status_code} {resp.text[:200]}"
+            logger.error(f"Serper news error for {specialty}: {error_msg}")
     except Exception as e:
+        status = "error"
+        error_msg = str(e)[:200]
         logger.error(f"Serper news exception for {specialty}: {e}")
+
+    tracker.log(
+        "breaking", "serper_news", "fetch_headlines",
+        request_summary=f"{specialty}: {query}"[:500],
+        status=status,
+        error_message=error_msg,
+        duration_ms=int((time.time() - start) * 1000),
+        num_results=len(headlines),
+        metadata={"specialty": specialty},
+    )
 
     # Cache
     try:

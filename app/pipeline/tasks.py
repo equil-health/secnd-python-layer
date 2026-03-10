@@ -12,6 +12,7 @@ from celery import chain
 from celery_app import app
 
 from ..config import settings
+from ..usage_tracker import tracker
 
 _redis = redis.Redis.from_url(settings.REDIS_URL)
 
@@ -24,6 +25,7 @@ def broadcast(case_id: str, message: dict):
 
 def dispatch_pipeline(case_id: str):
     """Start the full pipeline as a Celery chain."""
+    tracker.set_context(case_id=case_id)
     pipeline = chain(
         analyze_case.s(None, case_id),
         clean_output.s(case_id),
@@ -800,6 +802,7 @@ def compile_report(self, prev_result, case_id: str):
 
 def dispatch_research_pipeline_v2(case_id: str):
     """Start the enhanced 10-step research pipeline as a Celery chain."""
+    tracker.set_context(case_id=case_id)
     pipeline = chain(
         research_generate_questions.s(None, case_id),   # Step 2 (reused)
         research_costorm.s(case_id),                     # Step 3
@@ -1259,6 +1262,7 @@ def research_compile_report_v2(self, prev_result, case_id: str):
 
 def dispatch_research_pipeline(case_id: str):
     """Start the research pipeline as a Celery chain."""
+    tracker.set_context(case_id=case_id)
     pipeline = chain(
         research_generate_questions.s(None, case_id),
         research_storm.s(case_id),

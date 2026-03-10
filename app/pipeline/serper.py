@@ -2,10 +2,12 @@
 
 import hashlib
 import json
+import time
 import requests
 import redis
 
 from ..config import settings
+from ..usage_tracker import tracker
 
 _redis = redis.Redis.from_url(settings.REDIS_URL)
 CACHE_TTL = 86400  # 24 hours
@@ -28,7 +30,8 @@ def check_serper_health() -> bool:
         return False
 
 
-def search_serper(query: str, num_results: int = 5, query_suffix: str = "") -> list[dict]:
+def search_serper(query: str, num_results: int = 5, query_suffix: str = "",
+                  _module: str = "pipeline") -> list[dict]:
     """Search via Serper.dev API with Redis caching (24h TTL)."""
     if query_suffix:
         query = f"{query} {query_suffix}"
@@ -41,7 +44,10 @@ def search_serper(query: str, num_results: int = 5, query_suffix: str = "") -> l
     except redis.ConnectionError:
         pass
 
+    start = time.time()
     results = []
+    status = "success"
+    error_msg = None
     try:
         resp = requests.post(
             "https://google.serper.dev/search",
@@ -60,13 +66,27 @@ def search_serper(query: str, num_results: int = 5, query_suffix: str = "") -> l
                     "url": item.get("link", ""),
                     "snippet": item.get("snippet", ""),
                 })
-    except Exception:
-        pass
+        else:
+            status = "error"
+            error_msg = f"HTTP {resp.status_code}"
+    except Exception as e:
+        status = "error"
+        error_msg = str(e)[:200]
+
+    tracker.log(
+        _module, "serper", "search_serper",
+        request_summary=query[:500],
+        status=status,
+        error_message=error_msg,
+        duration_ms=int((time.time() - start) * 1000),
+        num_results=len(results),
+    )
 
     # Cache results
-    try:
-        _redis.setex(cache_key, CACHE_TTL, json.dumps(results))
-    except redis.ConnectionError:
-        pass
+    if results:
+        try:
+            _redis.setex(cache_key, CACHE_TTL, json.dumps(results))
+        except redis.ConnectionError:
+            pass
 
     return results

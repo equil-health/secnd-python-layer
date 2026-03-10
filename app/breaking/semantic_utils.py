@@ -15,6 +15,7 @@ import requests
 import numpy as np
 
 from ..config import settings
+from ..usage_tracker import tracker
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +60,7 @@ def get_embedding(text: str) -> list[float]:
     raise RuntimeError("Embedding API failed after 3 attempts")
 
 
-def get_embeddings_batch(texts: list[str]) -> list[list[float]]:
+def get_embeddings_batch(texts: list[str], _module: str = "pipeline") -> list[list[float]]:
     """Batch embedding generation — more efficient for multiple texts.
 
     Google AI Studio batch endpoint handles up to 100 texts per call.
@@ -68,12 +69,22 @@ def get_embeddings_batch(texts: list[str]) -> list[list[float]]:
     if not texts:
         return []
 
+    start = time.time()
     results = []
     # Process in chunks of 100
     for i in range(0, len(texts), 100):
         chunk = texts[i:i + 100]
         chunk_results = _embed_batch_chunk(chunk)
         results.extend(chunk_results)
+
+    tracker.log(
+        _module, "embedding", "get_embeddings_batch",
+        model=EMBED_MODEL,
+        status="success",
+        duration_ms=int((time.time() - start) * 1000),
+        num_results=len(texts),
+        input_chars=sum(len(t) for t in texts),
+    )
 
     return results
 

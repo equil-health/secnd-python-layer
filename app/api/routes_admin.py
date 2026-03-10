@@ -1,10 +1,10 @@
-"""Admin API routes — user management and stats."""
+"""Admin API routes — user management, stats, and usage dashboard."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select, func
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import select, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db.database import get_db
@@ -161,3 +161,163 @@ async def delete_user(
     await db.commit()
 
     return {"detail": "User deactivated"}
+
+
+# ============================================================
+# Usage Dashboard
+# ============================================================
+
+@router.get("/usage/summary")
+async def usage_summary(
+    days: int = Query(7, ge=1, le=90),
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """GET /api/admin/usage/summary — Aggregated usage stats.
+
+    Returns per-service call counts, total cost, error rates, and
+    average duration for the last N days.
+    """
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+
+    result = await db.execute(text("""
+        SELECT
+            service,
+            COUNT(*) AS total_calls,
+            COUNT(*) FILTER (WHERE status = 'success') AS success_count,
+            COUNT(*) FILTER (WHERE status = 'error') AS error_count,
+            ROUND(AVG(duration_ms)::numeric, 1) AS avg_duration_ms,
+            COALESCE(SUM(input_tokens), 0) AS total_input_tokens,
+            COALESCE(SUM(output_tokens), 0) AS total_output_tokens,
+            COALESCE(SUM(input_chars), 0) AS total_input_chars,
+            COALESCE(SUM(output_chars), 0) AS total_output_chars,
+            ROUND(COALESCE(SUM(estimated_cost_usd), 0)::numeric, 6) AS total_cost_usd
+        FROM usage_log
+        WHERE timestamp >= :since
+        GROUP BY service
+        ORDER BY total_calls DESC
+    """), {"since": since})
+
+    rows = result.mappings().all()
+    return {
+        "period_days": days,
+        "since": since.isoformat(),
+        "services": [dict(r) for r in rows],
+    }
+
+
+@router.get("/usage/by-module")
+async def usage_by_module(
+    days: int = Query(7, ge=1, le=90),
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """GET /api/admin/usage/by-module — Usage broken down by module + service."""
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+
+    result = await db.execute(text("""
+        SELECT
+            module, service, operation,
+            COUNT(*) AS total_calls,
+            COUNT(*) FILTER (WHERE status = 'error') AS errors,
+            ROUND(AVG(duration_ms)::numeric, 1) AS avg_duration_ms,
+            ROUND(COALESCE(SUM(estimated_cost_usd), 0)::numeric, 6) AS total_cost_usd
+        FROM usage_log
+        WHERE timestamp >= :since
+        GROUP BY module, service, operation
+        ORDER BY module, total_calls DESC
+    """), {"since": since})
+
+    rows = result.mappings().all()
+    return {"period_days": days, "breakdown": [dict(r) for r in rows]}
+
+
+@router.get("/usage/by-case/{case_id}")
+async def usage_by_case(
+    case_id: UUID,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """GET /api/admin/usage/by-case/{id} — Full audit trail for a single case/report."""
+    result = await db.execute(text("""
+        SELECT
+            timestamp, module, service, operation,
+            request_summary, model, status, error_message,
+            duration_ms, input_tokens, output_tokens,
+            input_chars, output_chars, num_results,
+            estimated_cost_usd, metadata
+        FROM usage_log
+        WHERE case_id = CAST(:case_id AS uuid)
+        ORDER BY timestamp ASC
+    """), {"case_id": str(case_id)})
+
+    rows = result.mappings().all()
+
+    total_cost = sum(float(r.get("estimated_cost_usd") or 0) for r in rows)
+    total_duration = sum(int(r.get("duration_ms") or 0) for r in rows)
+
+    return {
+        "case_id": str(case_id),
+        "total_api_calls": len(rows),
+        "total_cost_usd": round(total_cost, 6),
+        "total_duration_ms": total_duration,
+        "calls": [dict(r) for r in rows],
+    }
+
+
+@router.get("/usage/timeline")
+async def usage_timeline(
+    days: int = Query(7, ge=1, le=90),
+    group_by: str = Query("hour", regex="^(hour|day)$"),
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """GET /api/admin/usage/timeline — Time-series usage data for charts."""
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    trunc = "hour" if group_by == "hour" else "day"
+
+    result = await db.execute(text(f"""
+        SELECT
+            date_trunc(:trunc, timestamp) AS period,
+            COUNT(*) AS total_calls,
+            COUNT(*) FILTER (WHERE status = 'error') AS errors,
+            ROUND(COALESCE(SUM(estimated_cost_usd), 0)::numeric, 6) AS cost_usd
+        FROM usage_log
+        WHERE timestamp >= :since
+        GROUP BY period
+        ORDER BY period ASC
+    """), {"since": since, "trunc": trunc})
+
+    rows = result.mappings().all()
+    return {
+        "period_days": days,
+        "group_by": group_by,
+        "data": [{"period": r["period"].isoformat(), "calls": r["total_calls"],
+                   "errors": r["errors"], "cost_usd": float(r["cost_usd"])}
+                 for r in rows],
+    }
+
+
+@router.get("/usage/errors")
+async def usage_errors(
+    days: int = Query(7, ge=1, le=90),
+    limit: int = Query(50, ge=1, le=200),
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """GET /api/admin/usage/errors — Recent error log for debugging."""
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+
+    result = await db.execute(text("""
+        SELECT
+            timestamp, module, service, operation,
+            error_message, request_summary, duration_ms,
+            case_id, user_id
+        FROM usage_log
+        WHERE status = 'error' AND timestamp >= :since
+        ORDER BY timestamp DESC
+        LIMIT :limit
+    """), {"since": since, "limit": limit})
+
+    rows = result.mappings().all()
+    return {"total_errors": len(rows), "errors": [dict(r) for r in rows]}

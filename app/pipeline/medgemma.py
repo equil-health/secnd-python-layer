@@ -6,6 +6,7 @@ from google.oauth2 import service_account
 import google.auth.transport.requests as google_requests
 
 from ..config import settings
+from ..usage_tracker import tracker
 
 _credentials = None
 
@@ -41,6 +42,8 @@ def call_medgemma(prompt: str, max_tokens: int = 4096, temperature: float = 0.3)
         }]
     }
 
+    start = time.time()
+    last_error = None
     for attempt in range(3):
         try:
             resp = requests.post(
@@ -54,13 +57,36 @@ def call_medgemma(prompt: str, max_tokens: int = 4096, temperature: float = 0.3)
                 if "predictions" in data and data["predictions"]:
                     raw = data["predictions"][0]
                     if isinstance(raw, str) and "Output:" in raw:
-                        return raw.split("Output:", 1)[1].strip()
+                        result = raw.split("Output:", 1)[1].strip()
                     elif isinstance(raw, str):
-                        return raw.strip()
-                return str(data)
-        except Exception:
-            pass
+                        result = raw.strip()
+                    else:
+                        result = str(data)
+                else:
+                    result = str(data)
+                tracker.log(
+                    "pipeline", "medgemma", "call_medgemma",
+                    request_summary=prompt[:500],
+                    model="medgemma-4b",
+                    status="success",
+                    duration_ms=int((time.time() - start) * 1000),
+                    input_chars=len(prompt),
+                    output_chars=len(result),
+                )
+                return result
+            last_error = f"HTTP {resp.status_code}"
+        except Exception as e:
+            last_error = str(e)
         if attempt < 2:
             time.sleep(2 ** attempt)
 
+    tracker.log(
+        "pipeline", "medgemma", "call_medgemma",
+        request_summary=prompt[:500],
+        model="medgemma-4b",
+        status="error",
+        error_message=last_error,
+        duration_ms=int((time.time() - start) * 1000),
+        input_chars=len(prompt),
+    )
     raise RuntimeError("MedGemma failed after 3 attempts")
