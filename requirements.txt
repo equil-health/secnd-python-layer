@@ -22,3 +22,10 @@ Pillow>=10.0.0
 pytesseract>=0.3.10
 python-jose[cryptography]>=3.3.0
 passlib[bcrypt]>=1.7.4
+
+# Pulse v2 — Breaking pipeline
+pgvector>=0.3.0
+google-generativeai>=0.8.0
+python-dateutil>=2.8.0
+firebase-admin>=6.0.0
+numpy>=1.26.0

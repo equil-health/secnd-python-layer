@@ -1,13 +1,18 @@
-"""Domain validation — blocklist + Gemini classifier for ambiguous terms.
+"""Domain validation — 4-layer defence for ambiguous topics.
 
-Defence layer that catches non-medical or ambiguous topics before they
-enter the research pipeline.
+Layer 1: Static blocklist (fast, zero cost)
+Layer 2: pgvector semantic fast-pass (sub-10ms, checks medical_topic_embeddings)
+Layer 3: Gemini classifier (slower, only when L1 flags and L2 doesn't resolve)
+Layer 4: Disambiguation UX (409 response → user picks medical interpretation)
 """
 
 import json
+import logging
 import re
 
 from .gemini import call_gemini
+
+logger = logging.getLogger(__name__)
 
 # Terms that are common in both medicine and tech/AI.
 # Each entry has the medical meaning, the non-medical meaning, and
@@ -105,6 +110,48 @@ def check_known_ambiguity(topic: str) -> dict | None:
         }
 
     return None
+
+
+def check_pgvector_fast_pass(topic: str, threshold: float = 0.75) -> bool:
+    """Layer 2: Check if topic is semantically close to known medical topics.
+
+    Queries the ``medical_topic_embeddings`` table via pgvector cosine
+    distance.  If the nearest neighbour is within *threshold*, the topic
+    is almost certainly medical and we skip the expensive Gemini call.
+
+    Returns ``True`` (medical fast-pass) or ``False`` (unknown / need L3).
+    """
+    try:
+        from ..breaking.semantic_utils import get_embedding
+        from ..config import settings
+        from sqlalchemy import create_engine, text
+
+        sync_url = settings.DATABASE_URL.replace("+asyncpg", "+psycopg2")
+        engine = create_engine(sync_url)
+
+        topic_emb = get_embedding(topic)
+        emb_str = "[" + ",".join(str(v) for v in topic_emb) + "]"
+
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT 1 - (embedding <=> :emb::vector) AS similarity "
+                    "FROM medical_topic_embeddings "
+                    "ORDER BY embedding <=> :emb::vector "
+                    "LIMIT 1"
+                ),
+                {"emb": emb_str},
+            ).first()
+
+        if row and row.similarity >= threshold:
+            logger.debug("pgvector fast-pass: topic '%s' matched (sim=%.3f)", topic, row.similarity)
+            return True
+
+    except Exception as e:
+        # pgvector not seeded or table missing — graceful fallback
+        logger.warning("pgvector fast-pass unavailable: %s", e)
+
+    return False
 
 
 def validate_medical_domain(topic: str, specialty: str = "") -> dict:

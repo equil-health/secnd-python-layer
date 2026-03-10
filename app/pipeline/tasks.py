@@ -954,7 +954,7 @@ def research_extract_claims_task(self, prev_result, case_id: str):
 
 @app.task(bind=True, name="pipeline.research_search_evidence")
 def research_search_evidence(self, prev_result, case_id: str):
-    """Step 6 (v2): Serper searches each research claim."""
+    """Step 6 (v2): Serper searches each research claim + semantic pre-filter."""
     broadcast(case_id, {
         "type": "step_update", "step": 6,
         "label": "Searching evidence...", "status": "running",
@@ -965,6 +965,13 @@ def research_search_evidence(self, prev_result, case_id: str):
     from .prompts import MEDICAL_SEARCH_SUFFIX, MEDICAL_KEYWORD_SUFFIX
     from ..models.report import Report
 
+    # Import semantic pre-filter (graceful fallback if unavailable)
+    try:
+        from ..breaking.semantic_utils import filter_evidence_by_relevance
+        _has_semantic = True
+    except Exception:
+        _has_semantic = False
+
     session = _get_sync_session()
     try:
         report = session.query(Report).filter_by(case_id=case_id).first()
@@ -974,6 +981,7 @@ def research_search_evidence(self, prev_result, case_id: str):
         start = time.time()
         all_refs = []
         ref_counter = 1
+        filtered_count = 0
 
         for i, claim in enumerate(claims):
             broadcast(case_id, {
@@ -989,6 +997,14 @@ def research_search_evidence(self, prev_result, case_id: str):
             # Append medical keywords to the query and use medical site filter
             query = f"{query} {MEDICAL_KEYWORD_SUFFIX}"
             results = search_serper(query, num_results=settings.SERPER_RESULTS_PER_QUERY, query_suffix=MEDICAL_SEARCH_SUFFIX)
+
+            # Semantic pre-filter: discard results with low relevance to the claim
+            if _has_semantic and results:
+                before = len(results)
+                results = filter_evidence_by_relevance(
+                    claim.get("claim", query), results, threshold=0.68
+                )
+                filtered_count += before - len(results)
 
             claim_refs = []
             for r in results:
@@ -1011,11 +1027,15 @@ def research_search_evidence(self, prev_result, case_id: str):
         report.evidence_results = claims
         session.commit()
 
+        preview = f"{len(all_refs)} sources found"
+        if filtered_count:
+            preview += f" ({filtered_count} low-relevance filtered)"
+
         broadcast(case_id, {
             "type": "step_update", "step": 6,
             "label": "Searching evidence...", "status": "done",
             "duration_s": round(duration, 1),
-            "preview": f"{len(all_refs)} sources found",
+            "preview": preview,
         })
 
         return {"total_refs": len(all_refs), "serper_refs": all_refs}
@@ -1266,9 +1286,28 @@ def research_generate_questions(self, prev_result, case_id: str):
         context = case.raw_case_text or ""
         specialty = case.specialty or ""
 
-        step_instruction = f"""You are a research assistant. Given the following research topic, generate:
+        specialty_guidance = ""
+        if specialty:
+            specialty_guidance = f"""
+You are a {specialty} specialist researcher. Tailor your research questions to:
+- Use {specialty}-specific terminology, scoring systems, and guidelines
+- Reference the most relevant {specialty} journals and trials
+- Consider {specialty}-specific diagnostic criteria and treatment pathways
+- Include questions about epidemiology, pathophysiology, and emerging therapies
+  relevant to {specialty}
+"""
+        else:
+            specialty_guidance = """
+You are a general medical researcher. Generate broadly applicable research questions
+covering epidemiology, diagnosis, treatment, and prognosis.
+"""
+
+        step_instruction = f"""You are a medical research assistant.{specialty_guidance}
+
+Given the following research topic, generate:
 1. A refined, specific topic suitable for deep literature research (1 sentence)
 2. 5-7 focused research questions that would comprehensively explore this topic
+   from a {specialty or "general medicine"} perspective
 3. A coherence check: does the specialty "{specialty}" align with the research topic? If not, explain the mismatch.
 
 Topic: {topic}

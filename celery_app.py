@@ -38,9 +38,12 @@ app.config_from_object({
         "pipeline.research_synthesize_evidence": {"queue": "gemini_q"},
         "pipeline.research_generate_summary": {"queue": "gemini_q"},
         "pipeline.research_compile_report_v2": {"queue": "report_q"},
-        # Pulse — medical literature digest
+        # Pulse — medical literature digest (legacy)
         "pulse.generate_all_digests": {"queue": "pulse_q"},
         "pulse.generate_pulse_digest": {"queue": "pulse_q"},
+        # Breaking — daily headline pipeline (Pulse v2)
+        "breaking.daily_refresh": {"queue": "breaking_q"},
+        "breaking.reset_monthly_free_reports": {"queue": "breaking_q"},
     },
     "beat_schedule": {
         "pulse-daily-digests": {
@@ -53,8 +56,20 @@ app.config_from_object({
             "schedule": crontab(hour=6, minute=0, day_of_week="monday"),
             "kwargs": {"frequency_filter": "weekly"},
         },
+        # Breaking: daily refresh at 05:00 IST (23:30 UTC previous day)
+        "breaking-daily-refresh": {
+            "task": "breaking.daily_refresh",
+            "schedule": crontab(hour=23, minute=30),
+            "options": {"queue": "breaking_q"},
+        },
+        # Monthly free report reset (1st of month, 00:01 IST)
+        "breaking-monthly-reset": {
+            "task": "breaking.reset_monthly_free_reports",
+            "schedule": crontab(hour=18, minute=31, day_of_month=1),
+            "options": {"queue": "breaking_q"},
+        },
     },
 })
 
 # Auto-discover tasks
-app.autodiscover_tasks(["app.pipeline", "app.pulse"])
+app.autodiscover_tasks(["app.pipeline", "app.pulse", "app.breaking"])

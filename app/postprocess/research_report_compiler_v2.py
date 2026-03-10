@@ -28,13 +28,26 @@ def compile_research_report_v2(
 ) -> dict:
     """Compile the enhanced research report from the 10-step pipeline.
 
+    Null-ref guard: gracefully handles missing/empty inputs at every stage
+    so the report always compiles even if upstream steps failed or timed out.
+
     Returns dict with keys:
         report_markdown, report_html, references, total_sources, storm_article_clean.
     """
+    # Null-ref guard: normalize all inputs
+    storm_article = storm_article or ""
+    storm_url_to_info = storm_url_to_info or {}
+    evidence_results = evidence_results or []
+    evidence_synthesis = evidence_synthesis or ""
+    hallucination_check = hallucination_check or {}
+    executive_summary = executive_summary or "Executive summary not available — upstream step may have failed."
+    serper_refs = serper_refs or []
+    verification_stats = verification_stats or {}
+
     # Build unified bibliography from both Serper and STORM refs
     unique_refs, storm_remap, old_to_new = build_unified_bibliography(
         serper_refs,
-        storm_url_to_info or {},
+        storm_url_to_info,
     )
     unique_refs = filter_junk_refs(unique_refs)
 
@@ -107,6 +120,16 @@ were identified and corrected in the original article.*
 ---
 
 """
+    else:
+        report_md += """## Literature Review
+
+*Deep research (Co-STORM / STORM) did not produce an article for this topic.
+This may indicate a timeout or search backend issue. The evidence verification
+below is based on direct claim searches.*
+
+---
+
+"""
 
     # Evidence Verification section
     if evidence_synthesis:
@@ -116,6 +139,15 @@ were identified and corrected in the original article.*
 medical and scientific literature. Evidence was synthesized by Gemini 2.0 Flash.*
 
 {evidence_synthesis}
+
+---
+
+"""
+    elif claims_count > 0:
+        report_md += f"""## Evidence Verification
+
+*{claims_count} claims were extracted but evidence synthesis was not completed.
+This may indicate a pipeline timeout.*
 
 ---
 

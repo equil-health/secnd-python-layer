@@ -15,6 +15,7 @@ from .api.routes_audio import router as audio_router
 from .api.routes_auth import router as auth_router
 from .api.routes_admin import router as admin_router
 from .api.routes_pulse import router as pulse_router
+from .api.routes_breaking import router as breaking_router
 from .api.websocket import ws_pipeline_status
 
 
@@ -54,6 +55,7 @@ app.include_router(upload_router)
 app.include_router(research_router)
 app.include_router(audio_router)
 app.include_router(pulse_router)
+app.include_router(breaking_router)
 
 # WebSocket
 app.websocket("/ws/cases/{case_id}/status")(ws_pipeline_status)

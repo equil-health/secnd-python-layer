@@ -15,25 +15,40 @@ router = APIRouter(prefix="/api/research", tags=["research"])
 
 
 def _validate_topic(topic: str, specialty: str = "") -> dict | None:
-    """Check whether *topic* is ambiguous or non-medical.
+    """4-layer domain validation for research topics.
+
+    Layer 1 — Static blocklist (fast, zero cost)
+    Layer 2 — pgvector semantic fast-pass (sub-10ms)
+    Layer 3 — Gemini classifier (only when L1 flags and L2 doesn't resolve)
+    Layer 4 — Disambiguation payload (409 response)
 
     Returns ``None`` when the topic is safe to proceed.
     Otherwise returns a disambiguation payload (dict) for a 409 response.
     """
-    from ..pipeline.domain_validator import check_known_ambiguity, validate_medical_domain
+    from ..pipeline.domain_validator import (
+        check_known_ambiguity,
+        check_pgvector_fast_pass,
+        validate_medical_domain,
+    )
 
+    # L1: Static blocklist — instant check
     ambiguity = check_known_ambiguity(topic)
     if ambiguity is None:
-        return None
+        return None  # no ambiguous terms found → proceed
 
-    # Ambiguous term found — ask Gemini to classify
+    # L2: pgvector semantic fast-pass — check if topic is close to known
+    # medical concepts (cheap, avoids Gemini call for clearly medical topics)
+    if check_pgvector_fast_pass(topic):
+        return None  # semantically close to a medical topic → proceed
+
+    # L3: Gemini classifier — expensive but accurate
     classification = validate_medical_domain(topic, specialty)
 
     # High-confidence medical → let it through
     if classification.get("is_medical") and classification.get("confidence", 0) >= 0.8:
         return None
 
-    # All other cases → return disambiguation payload
+    # L4: Disambiguation UX — return payload for frontend
     return {
         "disambiguation_needed": True,
         "ambiguous_term": ambiguity["term"],

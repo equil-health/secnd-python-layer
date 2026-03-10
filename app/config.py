@@ -61,6 +61,17 @@ class Settings(BaseSettings):
     PULSE_DEFAULT_FREQUENCY: str = "weekly"
     PULSE_SCAN_DAYS_BACK: int = 7
 
+    # Breaking — Daily Headline Pipeline
+    BREAKING_ENABLED: bool = True
+    BREAKING_SPECIALTIES_COUNT: int = 10
+    BREAKING_HEADLINES_PER_SPECIALTY: int = 7
+    BREAKING_RAW_FETCH_COUNT: int = 20
+    BREAKING_DEDUP_THRESHOLD: float = 0.87
+    BREAKING_REDIS_TTL_HOURS: int = 12
+
+    # Firebase — Push Notifications
+    FIREBASE_SERVICE_ACCOUNT_PATH: str = ""
+
     # Auth / JWT
     JWT_SECRET_KEY: str = "change-me-in-production"
     JWT_ALGORITHM: str = "HS256"

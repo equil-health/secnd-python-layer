@@ -123,6 +123,15 @@ class ReportResponse(BaseModel):
     created_at: datetime
 
 
+class TrialStatus(BaseModel):
+    """Trial/subscription status for rate-limited users."""
+    tier: Optional[str] = None  # None = free trial, "pro" = paid
+    free_reports_used: int = 0
+    limit: int = 4
+    remaining: int = 4
+    trial_ends_at: Optional[datetime] = None
+
+
 class ResearchReportResponse(BaseModel):
     case_id: UUID
     specialty: Optional[str] = None
@@ -138,6 +147,7 @@ class ResearchReportResponse(BaseModel):
     report_html: Optional[str] = None
     pdf_url: Optional[str] = None
     docx_url: Optional[str] = None
+    trial_status: Optional[TrialStatus] = None
     created_at: Optional[datetime] = None
 
 
