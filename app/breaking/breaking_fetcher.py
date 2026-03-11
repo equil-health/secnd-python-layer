@@ -21,16 +21,46 @@ _redis = redis.Redis.from_url(settings.REDIS_URL)
 CACHE_TTL = 3600  # 1 hour for breaking news (fresher than research)
 
 SPECIALTY_SEARCH_TERMS = {
-    "Cardiology":       "cardiology cardiac heart failure arrhythmia coronary STEMI guidelines",
-    "Neurology":        "neurology stroke epilepsy dementia Parkinson MS ALS guidelines",
-    "Hepatology":       "hepatology liver cirrhosis hepatitis NASH MASLD DILI guidelines",
-    "Oncology":         "oncology cancer chemotherapy immunotherapy targeted therapy trial",
-    "Pulmonology":      "pulmonology COPD asthma ILD tuberculosis pneumonia NTEP",
-    "Endocrinology":    "endocrinology diabetes thyroid adrenal pituitary insulin guidelines",
-    "Gastroenterology": "gastroenterology IBD IBS colonoscopy H pylori guidelines",
-    "General Medicine": "internal medicine India clinical guidelines NMC CDSCO drug approval",
-    "Nephrology":       "nephrology CKD dialysis AKI renal transplant KDIGO guidelines",
-    "Rheumatology":     "rheumatology autoimmune lupus SLE RA vasculitis biologics",
+    "Cardiology":       [
+        "cardiology heart failure new study OR trial OR guideline",
+        "cardiac arrhythmia OR STEMI OR coronary breakthrough",
+    ],
+    "Neurology":        [
+        "neurology stroke OR dementia OR Alzheimer new study OR treatment",
+        "epilepsy OR Parkinson OR multiple sclerosis breakthrough OR trial",
+    ],
+    "Hepatology":       [
+        "liver disease hepatitis OR cirrhosis new study OR treatment",
+        "NASH OR MASLD OR fatty liver drug OR trial",
+    ],
+    "Oncology":         [
+        "cancer treatment new study OR breakthrough OR approval",
+        "oncology immunotherapy OR chemotherapy OR targeted therapy trial",
+    ],
+    "Pulmonology":      [
+        "lung disease COPD OR asthma new study OR treatment",
+        "tuberculosis OR pneumonia OR pulmonary fibrosis breakthrough",
+    ],
+    "Endocrinology":    [
+        "diabetes new drug OR treatment OR study OR guideline",
+        "thyroid OR obesity OR insulin breakthrough OR trial",
+    ],
+    "Gastroenterology": [
+        "gastroenterology IBD OR Crohn OR ulcerative colitis new study",
+        "GI disease treatment OR drug OR guideline breakthrough",
+    ],
+    "General Medicine": [
+        "medical news India drug approval OR clinical guideline 2026",
+        "internal medicine new study OR treatment breakthrough",
+    ],
+    "Nephrology":       [
+        "kidney disease CKD OR dialysis new study OR treatment",
+        "nephrology transplant OR AKI breakthrough OR trial",
+    ],
+    "Rheumatology":     [
+        "rheumatology lupus OR rheumatoid arthritis new treatment OR study",
+        "autoimmune disease biologics OR trial breakthrough",
+    ],
 }
 
 
@@ -54,10 +84,12 @@ def fetch_breaking_headlines(
     Returns:
         List of headline dicts with: title, url, source, snippet, published_at, specialty
     """
-    query = SPECIALTY_SEARCH_TERMS.get(specialty, specialty)
+    queries = SPECIALTY_SEARCH_TERMS.get(specialty, [specialty])
+    if isinstance(queries, str):
+        queries = [queries]
 
     # Check cache
-    cache_key = f"breaking:raw:{hashlib.md5(f'{specialty}:{query}'.encode()).hexdigest()}"
+    cache_key = f"breaking:raw:{hashlib.md5(specialty.encode()).hexdigest()}"
     if not skip_cache:
         try:
             cached = _redis.get(cache_key)
@@ -67,47 +99,56 @@ def fetch_breaking_headlines(
             pass
 
     headlines = []
+    seen_urls = set()
     start = time.time()
     status = "success"
     error_msg = None
-    try:
-        resp = requests.post(
-            "https://google.serper.dev/news",
-            json={
-                "q": query,
-                "num": max_results,
-                "tbs": "qdr:d",  # last 24 hours
-            },
-            headers={
-                "X-API-KEY": settings.SERPER_API_KEY,
-                "Content-Type": "application/json",
-            },
-            timeout=30,
-        )
 
-        if resp.status_code == 200:
-            data = resp.json()
-            for item in data.get("news", []):
-                headlines.append({
-                    "title": item.get("title", ""),
-                    "url": item.get("link", ""),
-                    "source": item.get("source", ""),
-                    "snippet": item.get("snippet", ""),
-                    "published_at": item.get("date", ""),
-                    "specialty": specialty,
-                })
-        else:
+    per_query_limit = max(max_results // len(queries), 10)
+
+    for query in queries:
+        try:
+            resp = requests.post(
+                "https://google.serper.dev/news",
+                json={
+                    "q": query,
+                    "num": per_query_limit,
+                    "tbs": "qdr:d",  # last 24 hours
+                },
+                headers={
+                    "X-API-KEY": settings.SERPER_API_KEY,
+                    "Content-Type": "application/json",
+                },
+                timeout=30,
+            )
+
+            if resp.status_code == 200:
+                data = resp.json()
+                for item in data.get("news", []):
+                    url = item.get("link", "")
+                    if url in seen_urls:
+                        continue
+                    seen_urls.add(url)
+                    headlines.append({
+                        "title": item.get("title", ""),
+                        "url": url,
+                        "source": item.get("source", ""),
+                        "snippet": item.get("snippet", ""),
+                        "published_at": item.get("date", ""),
+                        "specialty": specialty,
+                    })
+            else:
+                status = "error"
+                error_msg = f"HTTP {resp.status_code} {resp.text[:200]}"
+                logger.error(f"Serper news error for {specialty} query '{query}': {error_msg}")
+        except Exception as e:
             status = "error"
-            error_msg = f"HTTP {resp.status_code} {resp.text[:200]}"
-            logger.error(f"Serper news error for {specialty}: {error_msg}")
-    except Exception as e:
-        status = "error"
-        error_msg = str(e)[:200]
-        logger.error(f"Serper news exception for {specialty}: {e}")
+            error_msg = str(e)[:200]
+            logger.error(f"Serper news exception for {specialty}: {e}")
 
     tracker.log(
         "breaking", "serper_news", "fetch_headlines",
-        request_summary=f"{specialty}: {query}"[:500],
+        request_summary=f"{specialty}: {len(queries)} queries"[:500],
         status=status,
         error_message=error_msg,
         duration_ms=int((time.time() - start) * 1000),
