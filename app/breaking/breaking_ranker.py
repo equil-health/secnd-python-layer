@@ -7,11 +7,60 @@ B3:   Gemini urgency classification (ALERT / MAJOR / NEW)
 
 import json
 import logging
+import re
 
 from ..config import settings
 from ..pipeline.gemini import call_gemini
 from ..pipeline.openalex import OpenAlexVerifier
 from .semantic_utils import semantic_dedup
+
+
+def _repair_json(text: str) -> list[dict]:
+    """Attempt to repair truncated JSON arrays from Gemini.
+
+    Handles: unterminated strings, missing closing brackets, trailing commas.
+    """
+    text = text.strip()
+    # Remove markdown fences
+    if text.startswith("```"):
+        text = text.split("\n", 1)[-1]
+    if text.endswith("```"):
+        text = text.rsplit("```", 1)[0]
+    text = text.strip()
+
+    # Try direct parse first
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # Find the last complete object (ends with })
+    last_brace = text.rfind("}")
+    if last_brace == -1:
+        raise ValueError("No complete JSON object found")
+
+    truncated = text[:last_brace + 1]
+    # Ensure it ends as a valid array
+    if not truncated.rstrip().endswith("]"):
+        truncated = truncated.rstrip().rstrip(",") + "\n]"
+
+    try:
+        return json.loads(truncated)
+    except json.JSONDecodeError:
+        pass
+
+    # Last resort: extract individual objects with regex
+    objects = re.findall(r'\{[^{}]+\}', text)
+    results = []
+    for obj_str in objects:
+        try:
+            results.append(json.loads(obj_str))
+        except json.JSONDecodeError:
+            continue
+    if results:
+        return results
+
+    raise ValueError(f"Could not repair JSON: {text[:200]}")
 
 logger = logging.getLogger(__name__)
 
@@ -99,16 +148,8 @@ def rank_headlines(
     )
 
     try:
-        result_text = call_gemini(prompt, max_tokens=2048, temperature=0.1)
-        # Clean markdown code fences if present
-        result_text = result_text.strip()
-        if result_text.startswith("```"):
-            result_text = result_text.split("\n", 1)[-1]
-        if result_text.endswith("```"):
-            result_text = result_text.rsplit("```", 1)[0]
-        result_text = result_text.strip()
-
-        ranked = json.loads(result_text)
+        result_text = call_gemini(prompt, max_tokens=4096, temperature=0.1)
+        ranked = _repair_json(result_text)
 
         # Merge back original data (Gemini may lose fields)
         url_map = {h["url"]: h for h in deduped if h.get("url")}
@@ -254,15 +295,8 @@ def assign_urgency(headlines: list[dict], specialty: str) -> list[dict]:
     )
 
     try:
-        result_text = call_gemini(prompt, max_tokens=1024, temperature=0.1)
-        result_text = result_text.strip()
-        if result_text.startswith("```"):
-            result_text = result_text.split("\n", 1)[-1]
-        if result_text.endswith("```"):
-            result_text = result_text.rsplit("```", 1)[0]
-        result_text = result_text.strip()
-
-        classified = json.loads(result_text)
+        result_text = call_gemini(prompt, max_tokens=2048, temperature=0.1)
+        classified = _repair_json(result_text)
 
         # Merge urgency back into headlines (match by title)
         title_map = {c["title"]: c for c in classified}
