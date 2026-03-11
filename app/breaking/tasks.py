@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 @app.task(bind=True, name="breaking.daily_refresh",
-          soft_time_limit=120, time_limit=180)
+          soft_time_limit=540, time_limit=600)
 def breaking_daily_refresh(self):
     """Daily 05:00 IST Breaking pipeline — 5 steps (v5.0).
 

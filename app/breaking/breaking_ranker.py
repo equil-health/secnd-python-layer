@@ -148,7 +148,7 @@ def rank_headlines(
     )
 
     try:
-        result_text = call_gemini(prompt, max_tokens=4096, temperature=0.1)
+        result_text = call_gemini(prompt, max_tokens=4096, temperature=0.1, json_mode=True)
         ranked = _repair_json(result_text)
 
         # Merge back original data (Gemini may lose fields)
@@ -295,7 +295,7 @@ def assign_urgency(headlines: list[dict], specialty: str) -> list[dict]:
     )
 
     try:
-        result_text = call_gemini(prompt, max_tokens=2048, temperature=0.1)
+        result_text = call_gemini(prompt, max_tokens=2048, temperature=0.1, json_mode=True)
         classified = _repair_json(result_text)
 
         # Merge urgency back into headlines (match by title)
