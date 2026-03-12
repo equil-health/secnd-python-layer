@@ -84,6 +84,48 @@ SPECIALTY_SEARCH_QUERIES = {
         "gout hyperuricaemia urate-lowering therapy RCT results",
         "spondyloarthritis psoriatic arthritis biologic drug approval trial",
     ],
+    "Dermatology": [
+        "psoriasis biologic IL-17 IL-23 trial results guidelines 2025 2026",
+        "atopic dermatitis eczema dupilumab JAK inhibitor RCT outcomes",
+        "melanoma immunotherapy checkpoint inhibitor trial results 2025 2026",
+        "acne rosacea hidradenitis suppurativa treatment drug approval",
+    ],
+    "Emergency Medicine": [
+        "emergency medicine resuscitation cardiac arrest ROSC trial 2025 2026",
+        "sepsis septic shock early management bundle RCT outcomes guidelines",
+        "trauma critical care hemorrhage transfusion protocol trial results",
+        "emergency toxicology overdose antidote treatment guideline update",
+    ],
+    "Hematology": [
+        "leukemia lymphoma myeloma CAR-T bispecific trial results 2025 2026",
+        "sickle cell thalassemia gene therapy drug approval RCT outcomes",
+        "anticoagulation DOAC VTE thrombosis treatment trial guidelines",
+        "MDS myeloproliferative neoplasm drug approval trial results 2025 2026",
+    ],
+    "Infectious Disease": [
+        "antimicrobial resistance AMR antibiotic new drug trial results 2025 2026",
+        "HIV antiretroviral PrEP long-acting treatment trial outcomes",
+        "tuberculosis TB MDR-TB XDR-TB drug treatment trial India 2025 2026",
+        "dengue malaria vaccine antiviral treatment clinical study India",
+    ],
+    "Ophthalmology": [
+        "AMD macular degeneration anti-VEGF intravitreal injection trial 2025 2026",
+        "glaucoma IOP treatment drug approval RCT outcomes guidelines",
+        "diabetic retinopathy macular edema treatment trial results",
+        "cataract refractive surgery IOL outcomes study 2025 2026",
+    ],
+    "Pediatrics": [
+        "pediatric vaccine immunization schedule update WHO India 2025 2026",
+        "neonatal sepsis NICU treatment outcomes RCT clinical study",
+        "childhood asthma allergy biologic treatment trial results",
+        "pediatric oncology leukemia neuroblastoma drug approval trial 2025 2026",
+    ],
+    "Psychiatry": [
+        "depression anxiety SSRI SNRI ketamine psilocybin trial results 2025 2026",
+        "schizophrenia antipsychotic long-acting injectable RCT outcomes",
+        "ADHD autism spectrum treatment drug approval clinical trial",
+        "bipolar disorder lithium mood stabilizer treatment guidelines update",
+    ],
 }
 
 
@@ -104,7 +146,7 @@ def fetch_breaking_headlines(
     only here; semantic dedup happens downstream.
 
     Args:
-        specialty: One of the 10 active specialties
+        specialty: One of the 17 active specialties
         skip_cache: Bypass Redis cache
 
     Returns:
