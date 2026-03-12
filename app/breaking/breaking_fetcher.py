@@ -1,7 +1,7 @@
-"""Breaking Step B1 — Fetch headlines via Serper news search.
+"""Breaking Step B1 — Fetch headlines via Serper news search (v6.0).
 
-Calls Serper news endpoint for each active specialty.
-Fetches 20 raw headlines per specialty (200 total for 10 specialties).
+Calls Serper news endpoint with 3-4 targeted clinical sub-queries per specialty.
+Pools results before deduplication: ~60-80 raw headlines per specialty.
 time_filter="d" restricts to last 24 hours.
 """
 
@@ -20,71 +20,98 @@ logger = logging.getLogger(__name__)
 _redis = redis.Redis.from_url(settings.REDIS_URL)
 CACHE_TTL = 3600  # 1 hour for breaking news (fresher than research)
 
-SPECIALTY_SEARCH_TERMS = {
-    "Cardiology":       [
-        "cardiology heart failure new study OR trial OR guideline",
-        "cardiac arrhythmia OR STEMI OR coronary breakthrough",
+# v6.0: SPECIALTY_SEARCH_TERMS replaced by SPECIALTY_SEARCH_QUERIES
+# Each specialty has 3-4 targeted sub-queries covering distinct clinical domains.
+# Run each as a separate Serper news call, pool results, then deduplicate.
+SPECIALTY_SEARCH_QUERIES = {
+    "Cardiology": [
+        "heart failure HFrEF HFpEF trial results guidelines 2025 2026",
+        "ACS STEMI NSTEMI PCI reperfusion outcomes RCT",
+        "atrial fibrillation anticoagulation ablation trial results",
+        "CDSCO FDA cardiovascular drug approval recall 2025 2026",
     ],
-    "Neurology":        [
-        "neurology stroke OR dementia OR Alzheimer new study OR treatment",
-        "epilepsy OR Parkinson OR multiple sclerosis breakthrough OR trial",
+    "Nephrology": [
+        "CKD IgA nephropathy glomerulonephritis RCT trial results 2025 2026",
+        "KDIGO dialysis hemodialysis peritoneal guidelines update",
+        "renal transplant immunosuppression rejection outcomes trial",
+        "AKI acute kidney injury biomarker treatment clinical study",
     ],
-    "Hepatology":       [
-        "liver disease hepatitis OR cirrhosis new study OR treatment",
-        "NASH OR MASLD OR fatty liver drug OR trial",
+    "Oncology": [
+        "cancer drug approval FDA CDSCO oncology trial results 2025 2026",
+        "chemotherapy immunotherapy PD-1 PD-L1 CAR-T clinical trial outcomes",
+        "cancer drug safety recall black box warning withdrawal 2025 2026",
+        "targeted therapy biomarker NSCLC breast colorectal RCT results",
     ],
-    "Oncology":         [
-        "cancer treatment new study OR breakthrough OR approval",
-        "oncology immunotherapy OR chemotherapy OR targeted therapy trial",
+    "Neurology": [
+        "stroke thrombolysis thrombectomy outcomes RCT guidelines 2025 2026",
+        "epilepsy seizure drug approval treatment trial results",
+        "dementia Alzheimer Parkinson disease-modifying therapy trial",
+        "multiple sclerosis MS biologics trial results ECTRIMS 2025 2026",
     ],
-    "Pulmonology":      [
-        "lung disease COPD OR asthma new study OR treatment",
-        "tuberculosis OR pneumonia OR pulmonary fibrosis breakthrough",
+    "Hepatology": [
+        "NASH MASLD MAFLD clinical trial drug approval 2025 2026",
+        "hepatitis B C cirrhosis antiviral treatment outcomes study",
+        "liver transplant outcomes immunosuppression AASLD guidelines update",
+        "DILI drug-induced liver injury hepatotoxicity safety signal",
     ],
-    "Endocrinology":    [
-        "diabetes new drug OR treatment OR study OR guideline",
-        "thyroid OR obesity OR insulin breakthrough OR trial",
+    "Pulmonology": [
+        "COPD asthma biologics inhaler RCT trial results guidelines 2025 2026",
+        "ILD interstitial lung disease fibrosis treatment trial outcomes",
+        "tuberculosis TB NTEP drug-resistant treatment outcomes India",
+        "pulmonary hypertension PAH drug approval trial results",
+    ],
+    "Endocrinology": [
+        "type 2 diabetes GLP-1 SGLT2 cardiovascular outcomes RCT 2025 2026",
+        "thyroid cancer hypothyroidism hyperthyroidism treatment trial",
+        "adrenal pituitary Cushing acromegaly drug approval trial results",
+        "CDSCO FDA diabetes drug approval recall 2025 2026",
     ],
     "Gastroenterology": [
-        "gastroenterology IBD OR Crohn OR ulcerative colitis new study",
-        "GI disease treatment OR drug OR guideline breakthrough",
+        "IBD Crohn ulcerative colitis biologic trial results 2025 2026",
+        "colorectal cancer screening colonoscopy outcomes study",
+        "H pylori eradication antibiotic resistance treatment trial",
+        "GERD Barrett oesophagus endoscopy drug approval 2025 2026",
     ],
     "General Medicine": [
-        "medical news India drug approval OR clinical guideline 2026",
-        "internal medicine new study OR treatment breakthrough",
+        "CDSCO NMC drug approval clinical guideline India 2025 2026",
+        "India clinical trial results infectious disease outcomes",
+        "antimicrobial resistance AMR antibiotic stewardship India study",
+        "ICMR WHO guideline update India clinical management 2025 2026",
     ],
-    "Nephrology":       [
-        "kidney disease CKD OR dialysis new study OR treatment",
-        "nephrology transplant OR AKI breakthrough OR trial",
-    ],
-    "Rheumatology":     [
-        "rheumatology lupus OR rheumatoid arthritis new treatment OR study",
-        "autoimmune disease biologics OR trial breakthrough",
+    "Rheumatology": [
+        "rheumatoid arthritis RA biologic JAK inhibitor trial results 2025 2026",
+        "lupus SLE vasculitis treatment trial outcomes guidelines",
+        "gout hyperuricaemia urate-lowering therapy RCT results",
+        "spondyloarthritis psoriatic arthritis biologic drug approval trial",
     ],
 }
 
 
 def active_specialties() -> list[str]:
     """Return list of active specialties for Breaking pipeline."""
-    return list(SPECIALTY_SEARCH_TERMS.keys())
+    return list(SPECIALTY_SEARCH_QUERIES.keys())
 
 
 def fetch_breaking_headlines(
     specialty: str,
-    max_results: int = 20,
     skip_cache: bool = False,
 ) -> list[dict]:
-    """Fetch raw news headlines for a specialty via Serper news endpoint.
+    """Fetch raw headlines for one specialty using multiple targeted sub-queries.
+
+    v6.0: Runs all sub-queries in SPECIALTY_SEARCH_QUERIES[specialty] as
+    separate Serper news calls (20 results each). Results are pooled and
+    tagged with specialty + source_query before returning. URL-level dedup
+    only here; semantic dedup happens downstream.
 
     Args:
-        specialty: Medical specialty name (must be in SPECIALTY_SEARCH_TERMS)
-        max_results: Number of headlines to fetch (default 20)
+        specialty: One of the 10 active specialties
         skip_cache: Bypass Redis cache
 
     Returns:
-        List of headline dicts with: title, url, source, snippet, published_at, specialty
+        Pooled raw headlines with specialty and source_query tags.
+        Typically 60-80 items before deduplication.
     """
-    queries = SPECIALTY_SEARCH_TERMS.get(specialty, [specialty])
+    queries = SPECIALTY_SEARCH_QUERIES.get(specialty, [specialty])
     if isinstance(queries, str):
         queries = [queries]
 
@@ -98,13 +125,11 @@ def fetch_breaking_headlines(
         except redis.ConnectionError:
             pass
 
-    headlines = []
+    pooled = []
     seen_urls = set()
     start = time.time()
     status = "success"
     error_msg = None
-
-    per_query_limit = max(max_results // len(queries), 10)
 
     for query in queries:
         try:
@@ -112,7 +137,7 @@ def fetch_breaking_headlines(
                 "https://google.serper.dev/news",
                 json={
                     "q": query,
-                    "num": per_query_limit,
+                    "num": 20,
                     "tbs": "qdr:d",  # last 24 hours
                 },
                 headers={
@@ -129,13 +154,14 @@ def fetch_breaking_headlines(
                     if url in seen_urls:
                         continue
                     seen_urls.add(url)
-                    headlines.append({
+                    pooled.append({
                         "title": item.get("title", ""),
                         "url": url,
                         "source": item.get("source", ""),
                         "snippet": item.get("snippet", ""),
                         "published_at": item.get("date", ""),
                         "specialty": specialty,
+                        "source_query": query,
                     })
             else:
                 status = "error"
@@ -152,15 +178,18 @@ def fetch_breaking_headlines(
         status=status,
         error_message=error_msg,
         duration_ms=int((time.time() - start) * 1000),
-        num_results=len(headlines),
+        num_results=len(pooled),
         metadata={"specialty": specialty},
     )
 
     # Cache
     try:
-        _redis.setex(cache_key, CACHE_TTL, json.dumps(headlines))
+        _redis.setex(cache_key, CACHE_TTL, json.dumps(pooled))
     except redis.ConnectionError:
         pass
 
-    logger.info(f"[Breaking B1] {specialty}: fetched {len(headlines)} raw headlines")
-    return headlines
+    logger.info(
+        f"[Breaking B1] {specialty}: {len(queries)} queries -> "
+        f"{len(pooled)} raw headlines"
+    )
+    return pooled

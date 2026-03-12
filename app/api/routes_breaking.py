@@ -88,6 +88,15 @@ async def get_today_breaking(
             "is_retracted": row.is_retracted or False,
         })
 
+    # Semantic re-ranking at read time if doctor has topic history
+    doctor_topic_embeddings = await _get_doctor_topic_embeddings(db, user.id)
+    if doctor_topic_embeddings:
+        from ..breaking.semantic_utils import semantic_rerank
+        headlines = {
+            sp: semantic_rerank(sp_headlines, doctor_topic_embeddings)
+            for sp, sp_headlines in headlines.items()
+        }
+
     alert_count = sum(
         1 for sp_headlines in headlines.values()
         for h in sp_headlines if h.get("urgency_tier") == "ALERT"
@@ -312,6 +321,38 @@ def _upgrade_options() -> list[dict]:
         {"tier": "clinic_basic", "label": "\u20b91,999/month \u2014 10 reports", "action": "subscribe", "plan_id": "clinic_basic"},
         {"tier": "clinic_pro", "label": "\u20b94,999/month \u2014 30 reports", "action": "subscribe", "plan_id": "clinic_pro"},
     ]
+
+
+async def _get_doctor_topic_embeddings(
+    db: AsyncSession, doctor_id
+) -> list[list[float]]:
+    """Build doctor topic profile from recent deep_research actions.
+
+    Returns list of topic embeddings for semantic re-ranking.
+    Returns empty list if no history (re-ranking is skipped).
+    """
+    from datetime import timedelta
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+    result = await db.execute(
+        select(BreakingRead)
+        .where(
+            BreakingRead.doctor_id == doctor_id,
+            BreakingRead.action == "deep_research",
+            BreakingRead.read_at >= cutoff,
+        )
+    )
+    reads = result.scalars().all()
+    if not reads:
+        return []
+
+    # Get embeddings for research topics from the reads
+    topics = []
+    for r in reads:
+        if hasattr(r, "topic_embedding") and r.topic_embedding is not None:
+            topics.append(list(r.topic_embedding))
+
+    return topics
 
 
 def _build_trial_status(prefs: DoctorPreferences) -> TrialStatusResponse:

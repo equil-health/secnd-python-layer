@@ -1,13 +1,15 @@
-"""Breaking Steps B2, B2.5, B3 — Semantic dedup, Gemini rank, OpenAlex verify, urgency.
+"""Breaking Steps B2, B2.5, B3 — Source filter, semantic dedup, Gemini rank,
+OpenAlex verify, urgency classification (v6.0).
 
-B2:   Semantic dedup → Gemini selects top 7 per specialty with snippets + research_topics
-B2.5: OpenAlex verify on ranked headlines — filter retractions, enrich with quality data
-B3:   Gemini urgency classification (ALERT / MAJOR / NEW)
+B2:   filter_by_source_quality() -> semantic_dedup() -> RANK_PROMPT -> Gemini top 7
+B2.5: OpenAlex verify on ranked headlines — filter retractions, enrich quality data
+B3:   Gemini urgency classification (ALERT / MAJOR / NEW) with source credibility gate
 """
 
 import json
 import logging
 import re
+from urllib.parse import urlparse
 
 from ..config import settings
 from ..pipeline.gemini import call_gemini
@@ -30,7 +32,14 @@ def _repair_json(text: str) -> list[dict]:
 
     # Try direct parse first
     try:
-        return json.loads(text)
+        parsed = json.loads(text)
+        # Handle {"selected": [...]} wrapper from RANK_PROMPT
+        if isinstance(parsed, dict):
+            if "selected" in parsed:
+                return parsed["selected"]
+            if "classifications" in parsed:
+                return parsed["classifications"]
+        return parsed
     except json.JSONDecodeError:
         pass
 
@@ -45,7 +54,10 @@ def _repair_json(text: str) -> list[dict]:
         truncated = truncated.rstrip().rstrip(",") + "\n]"
 
     try:
-        return json.loads(truncated)
+        parsed = json.loads(truncated)
+        if isinstance(parsed, dict) and "selected" in parsed:
+            return parsed["selected"]
+        return parsed
     except json.JSONDecodeError:
         pass
 
@@ -62,40 +74,170 @@ def _repair_json(text: str) -> list[dict]:
 
     raise ValueError(f"Could not repair JSON: {text[:200]}")
 
+
 logger = logging.getLogger(__name__)
 
 
-# ── B2: Rank headlines ──────────────────────────────────────────────
+# ── Source quality filter (v6.0) ──────────────────────────────────
 
-RANK_PROMPT = """You are a medical news editor for Indian physicians.
+# Blocklist: never reach Gemini ranking
+SOURCE_BLOCKLIST_DOMAINS = {
+    # Press release / market research wires
+    "openpr.com", "prnewswire.com", "businesswire.com", "globenewswire.com",
+    "einpresswire.com", "accesswire.com", "prnewswire.co.in",
+    # Consumer tabloids and general media
+    "nypost.com", "dailymail.co.uk", "mirror.co.uk", "thesun.co.uk",
+    "foxnews.com", "huffpost.com", "buzzfeed.com",
+    # Geography-irrelevant regional outlets for Indian physician context
+    "propakistani.pk", "thedailystar.net",
+    "iol.co.za", "dailymaverick.co.za",
+    "thestar.com.my", "galencentre.org",
+    # Awareness / patient advocacy / wellness content
+    "healthline.com", "webmd.com", "everydayhealth.com",
+}
+
+# Source quality tiers: annotated on passing headlines
+SOURCE_QUALITY_TIERS = {
+    "tier_1": [
+        "nejm.org", "thelancet.com", "bmj.com", "jamanetwork.com",
+        "nature.com", "science.org", "cell.com", "annals.org",
+        "cdsco.gov.in", "mohfw.gov.in", "who.int",
+        "fda.gov", "ema.europa.eu", "icmr.nic.in",
+    ],
+    "tier_2": [
+        "medpagetoday.com", "targetedoncology.com",
+        "renalandurologynews.com", "ajkd.org", "jasn.asnjournals.org",
+        "jacc.org", "ahajournals.org", "ascopost.com", "jco.ascopubs.org",
+        "europeanheartjournal.com", "thorax.bmj.com",
+        "reuters.com", "apnews.com",
+    ],
+    "tier_3": [
+        "sciencedaily.com", "medicalxpress.com", "healio.com",
+        "mdedge.com", "healthday.com", "cnbc.com",
+        "thehindu.com", "livemint.com",
+    ],
+}
+
+
+def _extract_domain(url: str) -> str:
+    """Extract bare domain from URL for blocklist/tier matching."""
+    try:
+        return urlparse(url).netloc.lower().removeprefix("www.")
+    except Exception:
+        return ""
+
+
+def _get_source_tier(domain: str) -> str:
+    """Return tier label for a domain."""
+    for tier, domains in SOURCE_QUALITY_TIERS.items():
+        if any(d in domain for d in domains):
+            return tier
+    return "unranked"
+
+
+def filter_by_source_quality(headlines: list[dict]) -> list[dict]:
+    """Remove blocklisted sources before ranking. Annotate remaining
+    headlines with source_tier for Gemini context.
+
+    Deterministic pre-filter — no model call, no latency impact.
+    """
+    filtered = []
+    blocked_count = 0
+
+    for h in headlines:
+        domain = _extract_domain(h.get("url", ""))
+
+        if any(blocked in domain for blocked in SOURCE_BLOCKLIST_DOMAINS):
+            logger.info(
+                f"Source blocked: {domain} | "
+                f"{h.get('title', '')[:60]}"
+            )
+            blocked_count += 1
+            continue
+
+        h["source_tier"] = _get_source_tier(domain)
+        filtered.append(h)
+
+    logger.info(
+        f"[Breaking B2] filter_by_source_quality: {blocked_count} blocked, "
+        f"{len(filtered)} passed"
+    )
+    return filtered
+
+
+# ── B2: Rank headlines (v6.0 — fully specified RANK_PROMPT) ───────
+
+RANK_PROMPT = """You are a senior clinical editor curating daily medical intelligence for
+Indian specialist physicians. Your audience is practising doctors who need
+actionable clinical information, not general health news.
 
 SPECIALTY: {specialty}
+TODAY'S DATE: {today}
 
-Below are {count} medical news headlines from the last 24 hours.
-Select the TOP {top_n} most clinically significant headlines.
+HEADLINES TO EVALUATE (each includes source_tier: tier_1/tier_2/tier_3/unranked):
+{headlines_json}
 
-For each selected headline, provide:
-1. The original title (exact match)
-2. A 1-2 sentence clinical snippet explaining why this matters
-3. A precise research_topic — a clinical research question suitable for deep
-   literature review (NOT a restatement of the title)
+Your task:
+Select the best 5-7 headlines from the list above. Apply these rules strictly.
 
-HEADLINES:
-{headlines_text}
+--- MUST INCLUDE (highest priority) ---
+- New clinical trial results (Phase 2/3/4) directly relevant to {specialty}
+- Drug approvals, safety warnings, recalls, or black box updates (FDA, CDSCO, EMA)
+- Major guideline updates from recognised bodies (ACC/AHA/ESC/KDIGO/WHO/NMC/ICMR)
+- Practice-changing systematic reviews or meta-analyses with named effect sizes
 
-Return JSON array only, ordered by clinical significance:
-[
-  {{
-    "title": "exact original title",
-    "url": "original url",
-    "source": "original source",
-    "snippet": "1-2 sentence clinical significance",
-    "research_topic": "precise clinical research question for deep review",
-    "rank_score": 50-100,
-    "rank_position": 1
-  }},
-  ...
-]
+--- PREFER ---
+- Sources with source_tier: tier_1 or tier_2
+- Studies with named trial acronyms (CREDENCE, DAPA-CKD, EMPEROR-Reduced etc.)
+- Findings with specific named endpoints and numeric effect sizes
+- CDSCO, MOHFW, or ICMR communications for India-specific regulatory news
+
+--- EXCLUDE — do not select regardless of apparent relevance ---
+- Press releases and market research reports (openPR.com, PRNewsWire, BusinessWire,
+  market size reports, "Top Companies in X" stories)
+- Awareness day content: World Kidney Day, World Cancer Day, World Heart Day features,
+  annual awareness editorials, patient advocacy posts — these are calendar content,
+  not clinical intelligence
+- Geography-irrelevant healthcare policy: government health programme announcements
+  from Pakistan, Bangladesh, Sri Lanka, South Africa, Malaysia, or other non-Indian
+  jurisdictions UNLESS the story concerns a drug, guideline, or safety signal directly
+  used in Indian practice
+- Tabloid or consumer health media: any source not in tier_1/tier_2/tier_3, or any
+  source known for sensationalised health headlines regardless of tier annotation
+- Opinion pieces and editorials unless authored by a named specialist society
+- Duplicate topics: if two headlines cover the same clinical story, select only the
+  higher-tier source
+
+--- SNIPPET AND RESEARCH TOPIC ---
+For each selected headline, generate:
+1. snippet: 2 sentences. Explain WHY this matters to a {specialty} physician in India.
+   Focus on what it changes in practice or what clinical decision it informs.
+   Do NOT restate the headline title. Do NOT write generic text.
+2. research_topic: 1 precise clinical question for Deep Research pre-population.
+   Write a specific question, not a restatement of the title.
+
+--- RETURN FORMAT ---
+Return JSON only — no preamble, no markdown fences:
+{{
+  "selected": [
+    {{
+      "original_index": <int>,
+      "title": "exact original title",
+      "url": "original url",
+      "source": "original source",
+      "snippet": "<2 sentences, specialty-specific clinical relevance>",
+      "research_topic": "<precise clinical question>",
+      "rank_score": 50-100,
+      "rank_position": <1-7>
+    }}
+  ],
+  "excluded": [
+    {{
+      "original_index": <int>,
+      "excluded_reason": "<one of: press_release | awareness_day | geography_irrelevant | low_quality_source | duplicate_topic | not_clinically_actionable>"
+    }}
+  ]
+}}
 """
 
 
@@ -104,28 +246,34 @@ def rank_headlines(
     specialty: str,
     top_n: int = 7,
 ) -> list[dict]:
-    """B2: Semantic dedup → Gemini rank → top N headlines per specialty.
+    """B2: Source filter -> Semantic dedup -> Gemini rank -> top N per specialty.
+
+    v6.0 processing order:
+    fetch (B1) -> filter_by_source_quality() -> semantic_dedup() -> RANK_PROMPT -> Gemini
 
     Args:
-        raw_headlines: Raw headlines from B1 fetcher (typically 20)
+        raw_headlines: Raw headlines from B1 fetcher (typically 60-80)
         specialty: Medical specialty
         top_n: Number of headlines to select (default 7)
 
     Returns:
-        List of top_n ranked headline dicts
+        List of top_n ranked headline dicts with source_tier annotation
     """
     if not raw_headlines:
         return []
 
-    # Semantic deduplication first
-    deduped = semantic_dedup(raw_headlines, threshold=settings.BREAKING_DEDUP_THRESHOLD)
+    # v6.0: Source quality filter before dedup
+    filtered = filter_by_source_quality(raw_headlines)
+
+    # Semantic deduplication on filtered pool
+    deduped = semantic_dedup(filtered, threshold=settings.BREAKING_DEDUP_THRESHOLD)
     logger.info(
-        f"[Breaking B2] {specialty}: {len(raw_headlines)} raw → "
+        f"[Breaking B2] {specialty}: {len(raw_headlines)} raw -> "
+        f"{len(filtered)} after source filter -> "
         f"{len(deduped)} after dedup"
     )
 
     if len(deduped) <= top_n:
-        # Not enough to rank — return all with defaults
         for i, h in enumerate(deduped):
             h.setdefault("rank_score", 50)
             h.setdefault("rank_position", i + 1)
@@ -133,29 +281,48 @@ def rank_headlines(
             h.setdefault("research_topic", h.get("title", ""))
         return deduped
 
-    # Format headlines for Gemini
-    headlines_text = "\n".join(
-        f"{i+1}. [{h.get('source', 'Unknown')}] {h.get('title', '')}\n"
-        f"   URL: {h.get('url', '')}"
+    # Format headlines with source_tier for Gemini
+    from datetime import date
+    headlines_for_gemini = [
+        {
+            "index": i,
+            "title": h.get("title", ""),
+            "url": h.get("url", ""),
+            "source": h.get("source", ""),
+            "source_tier": h.get("source_tier", "unranked"),
+        }
         for i, h in enumerate(deduped)
-    )
+    ]
 
     prompt = RANK_PROMPT.format(
         specialty=specialty,
-        count=len(deduped),
-        top_n=top_n,
-        headlines_text=headlines_text,
+        today=str(date.today()),
+        headlines_json=json.dumps(headlines_for_gemini, indent=2),
     )
 
     try:
         result_text = call_gemini(prompt, max_tokens=4096, temperature=0.1, json_mode=True)
         ranked = _repair_json(result_text)
 
-        # Merge back original data (Gemini may lose fields)
-        url_map = {h["url"]: h for h in deduped if h.get("url")}
+        # Log exclusion reasons for feed quality monitoring
+        if isinstance(ranked, list):
+            selected = ranked
+        else:
+            selected = ranked
+
+        # Build enriched results from selected headlines
         enriched = []
-        for i, r in enumerate(ranked[:top_n]):
-            original = url_map.get(r.get("url"), {})
+        for i, r in enumerate(selected[:top_n]):
+            # Match back to deduped list by original_index or url
+            orig_idx = r.get("original_index")
+            original = {}
+            if orig_idx is not None and 0 <= orig_idx < len(deduped):
+                original = deduped[orig_idx]
+            else:
+                # Fallback: match by url
+                url_map = {h["url"]: h for h in deduped if h.get("url")}
+                original = url_map.get(r.get("url"), {})
+
             merged = {**original, **r}
             merged["rank_position"] = i + 1
             merged["specialty"] = specialty
@@ -166,7 +333,6 @@ def rank_headlines(
 
     except Exception as e:
         logger.error(f"[Breaking B2] Gemini rank failed for {specialty}: {e}")
-        # Fallback: return first top_n deduped headlines
         for i, h in enumerate(deduped[:top_n]):
             h["rank_position"] = i + 1
             h["rank_score"] = 50
@@ -220,56 +386,71 @@ def verify_breaking_sources(headlines: list[dict]) -> list[dict]:
         enriched.append(h)
 
     logger.info(
-        f"[Breaking B2.5] {len(headlines)} in → {len(enriched)} out "
+        f"[Breaking B2.5] {len(headlines)} in -> {len(enriched)} out "
         f"({len(headlines) - len(enriched)} retracted/filtered)"
     )
     return enriched
 
 
-# ── B3: Urgency classification ──────────────────────────────────────
+# ── B3: Urgency classification (v6.0 — source credibility gate) ───
 
-URGENCY_PROMPT = """You are a medical urgency classifier for a physician news app.
+URGENCY_PROMPT = """Assign an urgency tier to each headline for {specialty} physicians.
 
-Classify each headline into exactly one urgency tier:
+TIER DEFINITIONS:
 
 ALERT — Drug recall, black box warning, trial stopped for patient harm,
-        CDSCO/FDA safety communication, drug market withdrawal.
-        Expected: 0-1 per day total across all specialties.
+  CDSCO/FDA/EMA safety communication, market withdrawal of a drug.
+  CRITICAL CONSTRAINT: ALERT requires the story to originate from a
+  regulatory body, a peer-reviewed journal, or a tier_1/tier_2 source.
+  A consumer media, tabloid, or unranked source reporting alarming
+  statistics (e.g. "increases risk by 400%") does NOT qualify as ALERT
+  even if the language sounds urgent. Classify such headlines as NEW.
+  If uncertain whether the source is authoritative, default to MAJOR or NEW.
 
-MAJOR — Landmark RCT result, major guideline update (AHA/ESC/NMC/WHO),
-        new drug first-approval by CDSCO or FDA, large practice-changing
-        systematic review. Expected: 1-3 per day.
+MAJOR — Landmark Phase 3/4 RCT result with named trial and effect size,
+  major society guideline update (AHA/ESC/KDIGO/NMC/WHO), new first-in-class
+  drug approval by CDSCO or FDA, large practice-changing meta-analysis.
 
-NEW   — Observational study, updated meta-analysis, expert commentary,
-        Phase I/II result, case series. Default when in doubt.
+NEW — Observational study, Phase 1/2 result, secondary analysis, expert
+  commentary, device news, narrative review. Default when in doubt — do
+  not escalate to MAJOR or ALERT without clear justification.
 
-SPECIALTY: {specialty}
+HEADLINES (each includes source_tier and OpenAlex fields from prior steps):
+{headlines_with_source_tier}
 
-HEADLINES:
-{headlines_json}
+For each headline return:
+- urgency_tier: ALERT | MAJOR | NEW
+- urgency_reason: one sentence explaining the classification
+- source_credibility_note: if classifying ALERT, name the primary source
+  that justifies this tier (regulatory body, journal, or outlet name).
+  Return null for MAJOR and NEW.
 
-Return JSON array with exactly the same headlines, adding urgency_tier and
-urgency_reason (one sentence) to each:
-[
-  {{
-    "title": "exact title",
-    "urgency_tier": "ALERT|MAJOR|NEW",
-    "urgency_reason": "one sentence reason"
-  }},
-  ...
-]
+Return JSON only:
+{{
+  "classifications": [
+    {{
+      "title": "exact title",
+      "urgency_tier": "ALERT | MAJOR | NEW",
+      "urgency_reason": "<one sentence>",
+      "source_credibility_note": "<primary source name, or null>"
+    }}
+  ]
+}}
 """
 
 
 def assign_urgency(headlines: list[dict], specialty: str) -> list[dict]:
     """B3: Classify urgency tier for each headline via Gemini.
 
+    v6.0: Includes source_tier and OpenAlex fields in the prompt so Gemini
+    can apply the source credibility gate for ALERT classification.
+
     Args:
         headlines: Verified headlines from B2.5 (up to 7)
         specialty: Medical specialty
 
     Returns:
-        Headlines with urgency_tier and urgency_reason added.
+        Headlines with urgency_tier, urgency_reason, source_credibility_note added.
     """
     if not headlines:
         return []
@@ -280,6 +461,8 @@ def assign_urgency(headlines: list[dict], specialty: str) -> list[dict]:
                 "title": h.get("title", ""),
                 "snippet": h.get("snippet", ""),
                 "source": h.get("source", ""),
+                "url": h.get("url", ""),
+                "source_tier": h.get("source_tier", "unranked"),
                 "is_verified": h.get("is_verified", False),
                 "citation_count": h.get("citation_count"),
                 "quality_tier": h.get("quality_tier"),
@@ -291,7 +474,7 @@ def assign_urgency(headlines: list[dict], specialty: str) -> list[dict]:
 
     prompt = URGENCY_PROMPT.format(
         specialty=specialty,
-        headlines_json=headlines_json,
+        headlines_with_source_tier=headlines_json,
     )
 
     try:
@@ -305,9 +488,11 @@ def assign_urgency(headlines: list[dict], specialty: str) -> list[dict]:
             if match:
                 h["urgency_tier"] = match.get("urgency_tier", "NEW")
                 h["urgency_reason"] = match.get("urgency_reason", "")
+                h["source_credibility_note"] = match.get("source_credibility_note")
             else:
                 h["urgency_tier"] = "NEW"
                 h["urgency_reason"] = ""
+                h["source_credibility_note"] = None
 
         alert_count = sum(1 for h in headlines if h.get("urgency_tier") == "ALERT")
         major_count = sum(1 for h in headlines if h.get("urgency_tier") == "MAJOR")
@@ -323,4 +508,5 @@ def assign_urgency(headlines: list[dict], specialty: str) -> list[dict]:
         for h in headlines:
             h.setdefault("urgency_tier", "NEW")
             h.setdefault("urgency_reason", "")
+            h.setdefault("source_credibility_note", None)
         return headlines
