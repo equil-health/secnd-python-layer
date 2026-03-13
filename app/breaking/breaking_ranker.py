@@ -96,25 +96,163 @@ SOURCE_BLOCKLIST_DOMAINS = {
     "healthline.com", "webmd.com", "everydayhealth.com",
 }
 
-# Source quality tiers: annotated on passing headlines
+# ── SOURCE_QUALITY_TIERS — v8.0 comprehensive rewrite ────────────────────────
+# Covers all 19 specialties. Domains are matched as substrings of the full
+# URL netloc so subdomain variants (e.g. academic.oup.com) match correctly.
+#
+# tier_1: Primary journals, regulatory bodies, and major society publishers
+#         whose content is definitively practice-changing when it appears.
+# tier_2: Strong specialty-specific journals and reliable clinical news outlets.
+# tier_3: Acceptable secondary sources — quality science journalism and
+#         reputable aggregators. Used when tier_1/tier_2 absent.
 SOURCE_QUALITY_TIERS = {
     "tier_1": [
-        "nejm.org", "thelancet.com", "bmj.com", "jamanetwork.com",
-        "nature.com", "science.org", "cell.com", "annals.org",
-        "cdsco.gov.in", "mohfw.gov.in", "who.int",
-        "fda.gov", "ema.europa.eu", "icmr.nic.in",
+        # ── Mega-journals (all specialties) ───────────────────────────────
+        "nejm.org",             # New England Journal of Medicine
+        "thelancet.com",        # The Lancet (all sub-journals)
+        "bmj.com",              # The BMJ + BMJ Open
+        "jamanetwork.com",      # JAMA + JAMA Network journals
+        "nature.com",           # Nature Medicine, Nature Reviews journals
+        "science.org",          # Science / Science Translational Medicine
+        "cell.com",             # Cell + Cell Press journals
+        "annals.org",           # Annals of Internal Medicine
+        # ── Indian & global regulators ────────────────────────────────────
+        "cdsco.gov.in",         # Central Drugs Standard Control Organisation
+        "mohfw.gov.in",         # Ministry of Health India
+        "icmr.nic.in",          # Indian Council of Medical Research
+        "ncdc.gov.in",          # National Centre for Disease Control India
+        "who.int",              # World Health Organization
+        "fda.gov",              # US FDA
+        "ema.europa.eu",        # European Medicines Agency
+        # ── Cardiology ────────────────────────────────────────────────────
+        "ahajournals.org",      # Circulation, JAHA, Stroke, Hypertension
+        "jacc.org",             # JACC family
+        "europeanheartjournal.com",  # ESC flagship
+        # ── Oncology ──────────────────────────────────────────────────────
+        "jco.ascopubs.org",     # Journal of Clinical Oncology
+        "annalsofoncology.org", # Annals of Oncology (ESMO)
+        # ── Pulmonology ───────────────────────────────────────────────────
+        "atsjournals.org",      # AJRCCM, AnnalsATS — ATS publisher
+        "ersjournals.com",      # European Respiratory Journal
+        # ── Nephrology ────────────────────────────────────────────────────
+        "jasn.asnjournals.org", # Journal of the American Society of Nephrology
+        "ajkd.org",             # American Journal of Kidney Diseases
+        # ── Hematology ────────────────────────────────────────────────────
+        "ashpublications.org",  # Blood + Blood Advances (ASH publisher)
+        # ── Gastroenterology ──────────────────────────────────────────────
+        "gastrojournal.org",    # Gastroenterology (AGA flagship)
+        # ── Hepatology ────────────────────────────────────────────────────
+        "journal-of-hepatology.eu",  # Journal of Hepatology (EASL)
+        # ── Pediatrics ────────────────────────────────────────────────────
+        "publications.aap.org", # Pediatrics (AAP)
+        # ── Rheumatology ──────────────────────────────────────────────────
+        "ard.bmj.com",          # Annals of the Rheumatic Diseases
     ],
+
     "tier_2": [
-        "medpagetoday.com", "targetedoncology.com",
-        "renalandurologynews.com", "ajkd.org", "jasn.asnjournals.org",
-        "jacc.org", "ahajournals.org", "ascopost.com", "jco.ascopubs.org",
-        "europeanheartjournal.com", "thorax.bmj.com",
-        "reuters.com", "apnews.com",
+        # ── Cross-specialty clinical news ─────────────────────────────────
+        "medpagetoday.com",
+        "reuters.com",
+        "apnews.com",
+        # ── Cardiology ────────────────────────────────────────────────────
+        "acc.org",              # American College of Cardiology
+        "escardio.org",         # European Society of Cardiology
+        # ── Oncology ──────────────────────────────────────────────────────
+        "targetedoncology.com",
+        "ascopost.com",
+        "cancernetwork.com",
+        "onclive.com",
+        # ── Pulmonology ───────────────────────────────────────────────────
+        "chest.journal.org",    # CHEST journal (ACCP)
+        "thorax.bmj.com",       # Thorax (BMJ)
+        "ersnet.org",           # ERS news
+        # ── Nephrology ────────────────────────────────────────────────────
+        "renalandurologynews.com",
+        "kdigo.org",            # KDIGO guideline publications
+        # ── Hematology ────────────────────────────────────────────────────
+        "haematologica.org",    # Haematologica (EHA)
+        "hematologyadvisor.com",
+        "bloodadvances.org",
+        # ── Gastroenterology / Hepatology ─────────────────────────────────
+        "gut.bmj.com",          # Gut (BMJ)
+        "cghjournal.org",       # Clinical Gastroenterology and Hepatology
+        "aasld.org",            # AASLD guideline publications
+        "natap.org",            # HIV/hepatitis treatment updates
+        # ── Neurology ─────────────────────────────────────────────────────
+        "neurology.org",        # Neurology (AAN)
+        "jnnp.bmj.com",         # Journal of Neurology Neurosurgery Psychiatry
+        "strokejournal.org",    # Stroke (AHA)
+        "multiplesclerosis.net",
+        # ── Endocrinology ─────────────────────────────────────────────────
+        "diabetesjournals.org", # Diabetes Care + Diabetes (ADA)
+        "endocrinenews.org",
+        "jcem.endojournals.org",  # Journal of Clinical Endocrinology
+        # ── Dermatology ───────────────────────────────────────────────────
+        "jaad.org",             # Journal of the American Academy of Dermatology
+        "bjdonline.com",        # British Journal of Dermatology
+        "dermadvisor.com",
+        "practicaldermatology.com",
+        # ── Rheumatology ──────────────────────────────────────────────────
+        "rheumatology.org",     # Rheumatology (BSR)
+        "arthritis-research.com",
+        "rmdopen.bmj.com",      # RMD Open
+        "healio.com/rheumatology",
+        # ── Infectious Disease ────────────────────────────────────────────
+        "academic.oup.com/cid", # Clinical Infectious Diseases
+        "journalofinfection.com",
+        "thelancet.com/journals/laninf",  # Lancet Infectious Diseases
+        "idsa.org",             # IDSA guidelines
+        "antimicrobe.org",
+        # ── Ophthalmology ─────────────────────────────────────────────────
+        "ophthalmology.aaojournal.org",  # Ophthalmology (AAO)
+        "iovs.arvojournals.org",         # IOVS
+        "bjo.bmj.com",                   # British Journal of Ophthalmology
+        "reviewofophthalmology.com",
+        # ── Orthopaedics ──────────────────────────────────────────────────
+        "jbjs.org",             # Journal of Bone and Joint Surgery
+        "boneandjoint.org.uk",  # Bone & Joint Journal (BJJ)
+        "clinicalorthop.org",   # Clinical Orthopaedics and Related Research
+        "orthopaedicproceedings.org",
+        # ── Pediatrics ────────────────────────────────────────────────────
+        "indianpediatrics.net", # Indian Pediatrics (IAP)
+        "archpedi.jamanetwork.com",  # JAMA Pediatrics
+        "bmj.com/specialties/paediatrics",
+        # ── Psychiatry ────────────────────────────────────────────────────
+        "ajp.psychiatryonline.org",   # American Journal of Psychiatry
+        "bjp.rcpsych.org",            # British Journal of Psychiatry
+        "jamanetwork.com/journals/jamapsychiatry",
+        "psychologytoday.com",
+        # ── Gynaecology ───────────────────────────────────────────────────
+        "ajog.org",             # American Journal of Obstetrics & Gynecology
+        "bjog.org",             # BJOG (RCOG)
+        "ijgo.org",             # International Journal of Gynaecology & Obstetrics
+        "acog.org",             # ACOG practice bulletins
+        "fogsi.org",            # Federation of Obstetric & Gynaecological Societies India
+        # ── Emergency Medicine ────────────────────────────────────────────
+        "annalsofem.com",       # Annals of Emergency Medicine (ACEP)
+        "emergencymedicinenews.com",
+        "acep.org",             # ACEP guidelines
+        "emjournal.bmj.com",    # Emergency Medicine Journal (BMJ)
+        # ── Indian specialty journals (all specialties) ───────────────────
+        "japi.org",             # Journal of Association of Physicians of India
+        "ijmr.org.in",          # Indian Journal of Medical Research
+        "mgims.ac.in",          # MGIMS journal
+        "jiaps.com",            # Journal of Indian Association of Paediatric Surgeons
     ],
+
     "tier_3": [
-        "sciencedaily.com", "medicalxpress.com", "healio.com",
-        "mdedge.com", "healthday.com", "cnbc.com",
-        "thehindu.com", "livemint.com",
+        # Acceptable science journalism and aggregators
+        "sciencedaily.com",
+        "medicalxpress.com",
+        "healio.com",
+        "mdedge.com",
+        "healthday.com",
+        "cnbc.com",
+        # Indian business and general press for regulatory news
+        "thehindu.com",
+        "livemint.com",
+        "economictimes.indiatimes.com",
+        "business-standard.com",
     ],
 }
 
