@@ -17,7 +17,7 @@ KNOWN_SPECIALTIES = {
 # ── Request schemas ─────────────────────────────────────────────────
 
 class BreakingPreferencesUpdate(BaseModel):
-    specialties: list[str] = Field(..., min_length=1, max_length=3)
+    specialties: list[str] = Field(..., min_length=1, max_length=1)
 
 
 # ── Response schemas ────────────────────────────────────────────────
