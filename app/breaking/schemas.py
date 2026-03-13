@@ -9,8 +9,9 @@ from pydantic import BaseModel, Field, field_validator
 KNOWN_SPECIALTIES = {
     "Cardiology", "Nephrology", "Oncology", "Neurology", "Hepatology",
     "Pulmonology", "Endocrinology", "Gastroenterology", "General Medicine",
-    "Rheumatology", "Dermatology", "Emergency Medicine", "Hematology",
-    "Infectious Disease", "Ophthalmology", "Pediatrics", "Psychiatry",
+    "Rheumatology", "Dermatology", "Emergency Medicine", "Gynaecology",
+    "Hematology", "Infectious Disease", "Ophthalmology", "Orthopaedics",
+    "Pediatrics", "Psychiatry",
 }
 
 

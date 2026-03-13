@@ -126,6 +126,18 @@ SPECIALTY_SEARCH_QUERIES = {
         "ADHD autism spectrum treatment drug approval clinical trial",
         "bipolar disorder lithium mood stabilizer treatment guidelines update",
     ],
+    "Gynaecology": [
+        "endometriosis treatment drug approval clinical trial results 2025 2026",
+        "PCOS polycystic ovary syndrome management guidelines RCT outcomes",
+        "cervical ovarian uterine cancer screening treatment trial results",
+        "maternal health preeclampsia gestational diabetes guideline update India",
+    ],
+    "Orthopaedics": [
+        "knee hip arthroplasty joint replacement outcomes trial results 2025 2026",
+        "osteoporosis bisphosphonate denosumab fracture prevention RCT outcomes",
+        "ACL meniscus sports injury surgical outcomes clinical trial",
+        "spine surgery spinal fusion disc herniation treatment guideline update",
+    ],
 }
 
 
@@ -150,6 +162,8 @@ SPECIALTY_SAFETY_QUERIES = {
     "Ophthalmology":     "CDSCO FDA ophthalmology drug recall safety warning 2025 2026",
     "Pediatrics":        "CDSCO pediatric drug recall safety warning India 2025 2026",
     "Psychiatry":        "CDSCO FDA psychiatry drug recall safety warning 2025 2026",
+    "Gynaecology":       "CDSCO gynaecology drug recall safety contraceptive warning 2025 2026",
+    "Orthopaedics":      "CDSCO FDA orthopaedic implant drug recall safety warning 2025 2026",
 }
 
 
