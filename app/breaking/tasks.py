@@ -6,8 +6,12 @@ from datetime import date, datetime
 from celery import current_app as app
 from celery.exceptions import SoftTimeLimitExceeded
 
-from .breaking_fetcher import fetch_breaking_headlines, active_specialties
-from .breaking_ranker import rank_headlines, verify_breaking_sources, assign_urgency
+from .breaking_fetcher import (
+    fetch_breaking_headlines, active_specialties, build_batch_queries_for_specialty,
+)
+from .breaking_ranker import (
+    rank_headlines, verify_breaking_sources, assign_urgency, build_batch_topics_context,
+)
 from .breaking_store import store_headlines
 
 logger = logging.getLogger(__name__)
@@ -16,9 +20,11 @@ logger = logging.getLogger(__name__)
 @app.task(bind=True, name="breaking.daily_refresh",
           soft_time_limit=540, time_limit=600)
 def breaking_daily_refresh(self):
-    """Daily 05:00 IST Breaking pipeline — 5 steps (v5.0).
+    """Daily 05:00 IST Breaking pipeline — 5 steps (v7.0).
 
     B1 → B2 → B2.5 → B3 → B4
+    v7.0: Uses build_batch_queries_for_specialty() and build_batch_topics_context()
+    for doctor-declared topic personalisation.
     """
     today = date.today()
     all_headlines = {}
@@ -28,11 +34,17 @@ def breaking_daily_refresh(self):
 
     try:
         for specialty in active_specialties():
-            # B1 — Fetch
-            raw = fetch_breaking_headlines(specialty, skip_cache=True)
+            # v7.0: Build personalised query union for this specialty
+            doctor_queries = build_batch_queries_for_specialty(specialty, max_queries=20)
 
-            # B2 — Semantic dedup + Gemini rank
-            ranked = rank_headlines(raw, specialty)
+            # v7.0: Build batch topics context for RANK_PROMPT
+            topics_context = build_batch_topics_context(specialty)
+
+            # B1 — Fetch
+            raw = fetch_breaking_headlines(specialty, doctor_queries=doctor_queries, skip_cache=True)
+
+            # B2 — Source filter + Semantic dedup + Gemini rank
+            ranked = rank_headlines(raw, specialty, topics_context=topics_context)
 
             # B2.5 — OpenAlex verify (v5.0)
             verified = verify_breaking_sources(ranked)

@@ -18,6 +18,10 @@ from ..breaking.schemas import (
     TrialStatusResponse,
     DeepResearchResponse,
     PreferencesResponse,
+    TopicSaveRequest,
+    TopicSaveResponse,
+    TopicEntry,
+    KNOWN_SPECIALTIES,
 )
 
 router = APIRouter(prefix="/api/breaking", tags=["breaking"])
@@ -280,6 +284,149 @@ async def register_push_token(
     return {"status": "ok"}
 
 
+# ── POST /api/breaking/topics — Save doctor topics (v7.0) ──────────
+
+TOPIC_TO_QUERIES_PROMPT = """A physician has specified this clinical topic of interest: "{topic}"
+Medical specialty context: {specialty}
+
+Generate exactly 2 precise search queries that would surface the most clinically
+relevant recent literature, trial results, guideline updates, and safety signals
+for this topic.
+
+Rules:
+- Each query must be 6-12 words
+- Bias toward: Phase 3/4 RCT results, guideline updates, drug approvals, safety signals
+- Include year range "2025 2026" in at least one query
+- Do not restate the topic verbatim — expand into specific searchable clinical terms
+- Queries must be meaningfully different from each other (cover different aspects)
+- Use standard clinical abbreviations and trial/drug names where relevant
+
+Return JSON only — no preamble, no markdown fences:
+{{"queries": ["query 1", "query 2"]}}
+"""
+
+
+@router.post("/topics", response_model=TopicSaveResponse)
+async def save_doctor_topics(
+    body: TopicSaveRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Save or update the doctor's declared topics for one or more specialties.
+
+    For each topic string, calls Gemini to expand it into 2 search queries.
+    Stores both the original topic_text and generated_queries in
+    doctor_preferences.specialty_topics.
+    """
+    import logging
+    _logger = logging.getLogger(__name__)
+
+    result = await db.execute(
+        select(DoctorPreferences).where(DoctorPreferences.doctor_id == user.id)
+    )
+    prefs = result.scalar_one_or_none()
+
+    if not prefs:
+        raise HTTPException(status_code=400, detail="No preferences set. Complete onboarding first.")
+
+    existing_topics: dict = dict(prefs.specialty_topics or {})
+    updated_topics: dict = dict(existing_topics)
+    total_queries_generated = 0
+
+    for specialty, topic_texts in body.specialty_topics.items():
+        # Clearing: empty list removes this specialty's topics
+        if not topic_texts:
+            updated_topics[specialty] = []
+            _logger.info(f"Topics cleared for {user.id} / {specialty}")
+            continue
+
+        # Expand each topic text via Gemini
+        from ..pipeline.gemini import call_gemini
+
+        entries: list[dict] = []
+        for topic_text in topic_texts[:3]:
+            prompt = TOPIC_TO_QUERIES_PROMPT.format(
+                topic=topic_text,
+                specialty=specialty,
+            )
+            try:
+                result_text = call_gemini(prompt, max_tokens=512, temperature=0.2, json_mode=True)
+                import json as _json
+                parsed = _json.loads(result_text)
+                queries = parsed.get("queries", [])
+            except Exception as e:
+                _logger.warning(f"Gemini query expansion failed for '{topic_text}': {e}")
+                queries = []
+
+            # Validate: must be a list of 2 non-empty strings
+            queries = [
+                q for q in queries
+                if isinstance(q, str) and 5 < len(q) < 200
+            ][:2]
+
+            if len(queries) < 2:
+                _logger.warning(
+                    f"Gemini returned fewer than 2 queries for topic "
+                    f"'{topic_text}' ({specialty}). Using fallback."
+                )
+                queries = [
+                    f"{topic_text} clinical trial results 2025 2026",
+                    f"{topic_text} treatment guidelines update",
+                ]
+
+            entries.append({
+                "topic_text": topic_text,
+                "generated_queries": queries,
+            })
+            total_queries_generated += len(queries)
+
+        updated_topics[specialty] = entries
+        _logger.info(
+            f"Topics saved for {user.id} / {specialty}: "
+            f"{len(entries)} topics, {sum(len(e['generated_queries']) for e in entries)} queries"
+        )
+
+    # Write back to database
+    prefs.specialty_topics = updated_topics
+    prefs.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(prefs)
+
+    # Build response
+    response_topics: dict[str, list[TopicEntry]] = {}
+    for specialty, entries in updated_topics.items():
+        if entries:
+            response_topics[specialty] = [TopicEntry(**e) for e in entries]
+
+    return TopicSaveResponse(
+        status="saved",
+        specialty_topics=response_topics,
+        queries_generated=total_queries_generated,
+        message="Topics saved. Your Breaking feed will reflect these topics at 05:00 IST.",
+    )
+
+
+@router.get("/topics")
+async def get_doctor_topics(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Retrieve the doctor's current declared topics and generated queries."""
+    result = await db.execute(
+        select(DoctorPreferences).where(DoctorPreferences.doctor_id == user.id)
+    )
+    prefs = result.scalar_one_or_none()
+
+    if not prefs or not prefs.specialty_topics:
+        return {}
+
+    return {
+        specialty: [TopicEntry(**entry) for entry in entries]
+        for specialty, entries in prefs.specialty_topics.items()
+        if entries
+    }
+
+
 # ── Helpers ─────────────────────────────────────────────────────────
 
 def _check_trial_gate(prefs: DoctorPreferences) -> tuple[bool, dict]:
@@ -326,13 +473,38 @@ def _upgrade_options() -> list[dict]:
 async def _get_doctor_topic_embeddings(
     db: AsyncSession, doctor_id
 ) -> list[list[float]]:
-    """Build doctor topic profile from recent deep_research actions.
+    """Build doctor topic profile for semantic re-ranking.
+
+    v7.0 update: includes embeddings from declared specialty_topics in addition
+    to implicit signals from breaking_reads deep_research history.
+    Declared topics are given priority — they appear first in the list so
+    max-similarity scoring reflects explicit intent before implicit behaviour.
 
     Returns list of topic embeddings for semantic re-ranking.
-    Returns empty list if no history (re-ranking is skipped).
+    Returns empty list if no history and no declared topics (re-ranking is skipped).
     """
     from datetime import timedelta
 
+    embeddings = []
+
+    # 1. Declared topics (v7.0 signal — explicit intent)
+    prefs_result = await db.execute(
+        select(DoctorPreferences).where(DoctorPreferences.doctor_id == doctor_id)
+    )
+    prefs = prefs_result.scalar_one_or_none()
+
+    if prefs and prefs.specialty_topics:
+        from ..breaking.semantic_utils import get_embedding
+        for _specialty, topic_entries in prefs.specialty_topics.items():
+            for entry in topic_entries:
+                text = entry.get("topic_text", "")
+                if text:
+                    try:
+                        embeddings.append(get_embedding(text))
+                    except Exception:
+                        pass
+
+    # 2. Implicit signal from reading history (existing v6.0 behaviour)
     cutoff = datetime.now(timezone.utc) - timedelta(days=30)
     result = await db.execute(
         select(BreakingRead)
@@ -343,16 +515,12 @@ async def _get_doctor_topic_embeddings(
         )
     )
     reads = result.scalars().all()
-    if not reads:
-        return []
 
-    # Get embeddings for research topics from the reads
-    topics = []
     for r in reads:
         if hasattr(r, "topic_embedding") and r.topic_embedding is not None:
-            topics.append(list(r.topic_embedding))
+            embeddings.append(list(r.topic_embedding))
 
-    return topics
+    return embeddings
 
 
 def _build_trial_status(prefs: DoctorPreferences) -> TrialStatusResponse:

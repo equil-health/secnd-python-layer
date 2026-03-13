@@ -174,6 +174,9 @@ actionable clinical information, not general health news.
 SPECIALTY: {specialty}
 TODAY'S DATE: {today}
 
+DOCTOR'S DECLARED TOPICS OF INTEREST:
+{doctor_topics_context}
+
 HEADLINES TO EVALUATE (each includes source_tier: tier_1/tier_2/tier_3/unranked):
 {headlines_json}
 
@@ -187,6 +190,9 @@ Select the best 5-7 headlines from the list above. Apply these rules strictly.
 - Practice-changing systematic reviews or meta-analyses with named effect sizes
 
 --- PREFER ---
+- Headlines directly relevant to one or more of the DOCTOR'S DECLARED TOPICS above.
+  If a headline matches a declared topic, it should rank above a general specialty
+  headline of equal clinical quality. This is the primary personalisation signal.
 - Sources with source_tier: tier_1 or tier_2
 - Studies with named trial acronyms (CREDENCE, DAPA-CKD, EMPEROR-Reduced etc.)
 - Findings with specific named endpoints and numeric effect sizes
@@ -211,7 +217,8 @@ Select the best 5-7 headlines from the list above. Apply these rules strictly.
 --- SNIPPET AND RESEARCH TOPIC ---
 For each selected headline, generate:
 1. snippet: 2 sentences. Explain WHY this matters to a {specialty} physician in India.
-   Focus on what it changes in practice or what clinical decision it informs.
+   If this headline is directly relevant to a declared topic, explicitly note why it
+   matters for that topic. Focus on what it changes in practice.
    Do NOT restate the headline title. Do NOT write generic text.
 2. research_topic: 1 precise clinical question for Deep Research pre-population.
    Write a specific question, not a restatement of the title.
@@ -241,20 +248,115 @@ Return JSON only — no preamble, no markdown fences:
 """
 
 
+def build_doctor_topics_context(
+    specialty: str,
+    topic_entries: list[dict],
+) -> str:
+    """Build the doctor_topics_context string for RANK_PROMPT injection.
+
+    Args:
+        specialty:     The specialty being ranked.
+        topic_entries: List of topic dicts from doctor_preferences.specialty_topics[specialty].
+                       Each: {"topic_text": "...", "generated_queries": [...]}
+
+    Returns:
+        Formatted string for injection into RANK_PROMPT.
+        Returns a generic message if no topics are declared.
+    """
+    if not topic_entries:
+        return (
+            f"No specific topics declared. "
+            f"Rank by general {specialty} clinical importance."
+        )
+
+    lines = ["This doctor has declared the following clinical topics of interest:"]
+    for i, entry in enumerate(topic_entries, 1):
+        lines.append(f"  {i}. {entry['topic_text']}")
+    lines.append(
+        "\nStrongly prefer headlines that are directly relevant to any of these topics. "
+        "A headline matching a declared topic should rank above a general specialty "
+        "headline of equal clinical quality."
+    )
+    return "\n".join(lines)
+
+
+def build_batch_topics_context(specialty: str) -> str:
+    """Build RANK_PROMPT context from the union of all active doctor topics
+    for this specialty. Used in the batch pipeline where a single Gemini
+    ranking call serves all doctors for that specialty.
+    """
+    from collections import Counter
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from ..config import settings as _settings
+    from ..models.breaking import DoctorPreferences
+
+    sync_url = _settings.DATABASE_URL.replace("+asyncpg", "+psycopg2")
+    engine = create_engine(sync_url)
+    Session = sessionmaker(bind=engine)
+
+    with Session() as db:
+        active_prefs = (
+            db.query(DoctorPreferences)
+            .filter(
+                DoctorPreferences.breaking_enabled == True,  # noqa: E712
+                DoctorPreferences.specialty_topics.isnot(None),
+            )
+            .all()
+        )
+
+    topic_texts: list[str] = []
+    for prefs in active_prefs:
+        topics = prefs.specialty_topics or {}
+        for entry in topics.get(specialty, []):
+            text = entry.get("topic_text", "").strip()
+            if text:
+                topic_texts.append(text)
+
+    if not topic_texts:
+        return (
+            f"No specific topics declared. "
+            f"Rank by general {specialty} clinical importance."
+        )
+
+    # Show top topics by frequency, max 10 for prompt conciseness
+    counted = Counter(topic_texts)
+    top_topics = [t for t, _ in counted.most_common(10)]
+
+    lines = [
+        f"Active doctors in {specialty} have declared these topics of interest "
+        f"(listed by popularity):"
+    ]
+    for i, topic in enumerate(top_topics, 1):
+        count = counted[topic]
+        lines.append(
+            f"  {i}. {topic}"
+            + (f" ({count} doctors)" if count > 1 else "")
+        )
+    lines.append(
+        "\nStrongly prefer headlines relevant to any of these topics. "
+        "Higher-frequency topics reflect broader doctor interest and should "
+        "be weighted accordingly."
+    )
+    return "\n".join(lines)
+
+
 def rank_headlines(
     raw_headlines: list[dict],
     specialty: str,
     top_n: int = 7,
+    topics_context: str = "",
 ) -> list[dict]:
     """B2: Source filter -> Semantic dedup -> Gemini rank -> top N per specialty.
 
-    v6.0 processing order:
+    v7.0 processing order:
     fetch (B1) -> filter_by_source_quality() -> semantic_dedup() -> RANK_PROMPT -> Gemini
 
     Args:
-        raw_headlines: Raw headlines from B1 fetcher (typically 60-80)
+        raw_headlines: Raw headlines from B1 fetcher (typically 60-120)
         specialty: Medical specialty
         top_n: Number of headlines to select (default 7)
+        topics_context: v7.0 doctor topics context string for RANK_PROMPT
 
     Returns:
         List of top_n ranked headline dicts with source_tier annotation
@@ -294,14 +396,21 @@ def rank_headlines(
         for i, h in enumerate(deduped)
     ]
 
+    # v7.0: Inject doctor topics context into RANK_PROMPT
+    context_str = topics_context or (
+        f"No specific topics declared. "
+        f"Rank by general {specialty} clinical importance."
+    )
+
     prompt = RANK_PROMPT.format(
         specialty=specialty,
         today=str(date.today()),
+        doctor_topics_context=context_str,
         headlines_json=json.dumps(headlines_for_gemini, indent=2),
     )
 
     try:
-        result_text = call_gemini(prompt, max_tokens=4096, temperature=0.1, json_mode=True)
+        result_text = call_gemini(prompt, max_tokens=8192, temperature=0.1, json_mode=True)
         ranked = _repair_json(result_text)
 
         # Log exclusion reasons for feed quality monitoring
@@ -478,7 +587,7 @@ def assign_urgency(headlines: list[dict], specialty: str) -> list[dict]:
     )
 
     try:
-        result_text = call_gemini(prompt, max_tokens=2048, temperature=0.1, json_mode=True)
+        result_text = call_gemini(prompt, max_tokens=4096, temperature=0.1, json_mode=True)
         classified = _repair_json(result_text)
 
         # Merge urgency back into headlines (match by title)

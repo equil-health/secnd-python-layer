@@ -7,7 +7,7 @@ from sqlalchemy import (
     Column, String, Integer, Float, Text, Date, DateTime,
     Boolean, ForeignKey,
 )
-from sqlalchemy.dialects.postgresql import UUID, ARRAY
+from sqlalchemy.dialects.postgresql import UUID, ARRAY, JSONB
 from sqlalchemy.orm import relationship
 
 from ..db.database import Base
@@ -64,6 +64,10 @@ class DoctorPreferences(Base):
     # Push notifications
     push_token = Column(Text, nullable=True)
     push_platform = Column(String(10), nullable=True)  # "ios" or "android"
+
+    # v7.0: Doctor-declared free-text topics with Gemini-expanded search queries
+    # Structure: {"Cardiology": [{"topic_text": "...", "generated_queries": [...]}, ...], ...}
+    specialty_topics = Column(JSONB, nullable=True, default=dict)
 
     created_at = Column(DateTime(timezone=True), nullable=False,
                         default=lambda: datetime.now(timezone.utc))

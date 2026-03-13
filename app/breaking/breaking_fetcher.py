@@ -129,31 +129,134 @@ SPECIALTY_SEARCH_QUERIES = {
 }
 
 
+# v7.0: Always-appended safety query per specialty.
+# Ensures CDSCO recalls, black-box warnings, and ICMR alerts are never missed
+# even when a doctor's declared topics are narrow.
+SPECIALTY_SAFETY_QUERIES = {
+    "Cardiology":        "CDSCO FDA cardiovascular drug recall safety warning 2025 2026",
+    "Nephrology":        "CDSCO renal drug safety recall nephrotoxicity 2025 2026",
+    "Oncology":          "CDSCO FDA oncology drug approval recall safety 2025 2026",
+    "Neurology":         "CDSCO FDA neurology drug recall safety warning 2025 2026",
+    "Hepatology":        "CDSCO hepatotoxicity drug recall liver safety 2025 2026",
+    "Pulmonology":       "CDSCO inhaler COPD asthma drug recall safety 2025 2026",
+    "Endocrinology":     "CDSCO FDA diabetes drug recall hypoglycaemia safety 2025 2026",
+    "Gastroenterology":  "CDSCO GI drug recall safety IBD gastroenterology 2025 2026",
+    "General Medicine":  "CDSCO India drug recall safety warning NMC guideline 2025 2026",
+    "Rheumatology":      "CDSCO FDA biologic JAK inhibitor recall safety 2025 2026",
+    "Dermatology":       "CDSCO FDA dermatology drug recall safety warning 2025 2026",
+    "Emergency Medicine":"CDSCO emergency drug recall safety critical care 2025 2026",
+    "Hematology":        "CDSCO FDA hematology drug recall safety warning 2025 2026",
+    "Infectious Disease":"CDSCO antimicrobial antibiotic recall safety resistance 2025 2026",
+    "Ophthalmology":     "CDSCO FDA ophthalmology drug recall safety warning 2025 2026",
+    "Pediatrics":        "CDSCO pediatric drug recall safety warning India 2025 2026",
+    "Psychiatry":        "CDSCO FDA psychiatry drug recall safety warning 2025 2026",
+}
+
+
 def active_specialties() -> list[str]:
     """Return list of active specialties for Breaking pipeline."""
     return list(SPECIALTY_SEARCH_QUERIES.keys())
 
 
+def build_batch_queries_for_specialty(
+    specialty: str,
+    max_queries: int = 20,
+) -> list[str]:
+    """Build the union of search queries for one specialty across all active doctors.
+
+    Called once per specialty in breaking_daily_refresh(), before the fetch loop.
+
+    Design:
+    - Collects generated_queries from every active doctor's specialty_topics for this specialty.
+    - Deduplicates across doctors (exact string match).
+    - Ranks by frequency — queries shared by more doctors are more important.
+    - Caps at max_queries to keep Serper cost predictable.
+    - Appends SPECIALTY_SAFETY_QUERIES[specialty] unconditionally.
+    - Falls back to SPECIALTY_SEARCH_QUERIES if no doctor has declared topics.
+    """
+    from collections import Counter
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from ..models.breaking import DoctorPreferences
+
+    sync_url = settings.DATABASE_URL.replace("+asyncpg", "+psycopg2")
+    engine = create_engine(sync_url)
+    Session = sessionmaker(bind=engine)
+
+    with Session() as db:
+        active_prefs = (
+            db.query(DoctorPreferences)
+            .filter(
+                DoctorPreferences.breaking_enabled == True,  # noqa: E712
+                DoctorPreferences.specialty_topics.isnot(None),
+            )
+            .all()
+        )
+
+    # Collect all generated queries for this specialty across active doctors
+    all_queries: list[str] = []
+    has_any_topics = False
+
+    for prefs in active_prefs:
+        topics = prefs.specialty_topics or {}
+        specialty_entries = topics.get(specialty, [])
+        for entry in specialty_entries:
+            generated = entry.get("generated_queries", [])
+            all_queries.extend(generated)
+            if generated:
+                has_any_topics = True
+
+    # Fallback: no doctor has declared topics for this specialty
+    if not has_any_topics:
+        fallback = list(SPECIALTY_SEARCH_QUERIES.get(specialty, []))
+        safety = SPECIALTY_SAFETY_QUERIES.get(specialty)
+        if safety and safety not in fallback:
+            fallback.append(safety)
+        logger.info(
+            f"build_batch_queries: {specialty} — no doctor topics, "
+            f"using fallback ({len(fallback)} queries)"
+        )
+        return fallback
+
+    # Rank by frequency, deduplicate, cap
+    query_counts = Counter(all_queries)
+    ranked = [q for q, _ in query_counts.most_common(max_queries)]
+
+    # Always append specialty safety query — outside the cap
+    safety = SPECIALTY_SAFETY_QUERIES.get(specialty)
+    if safety and safety not in ranked:
+        ranked.append(safety)
+
+    logger.info(
+        f"build_batch_queries: {specialty} — {len(all_queries)} raw, "
+        f"{len(query_counts)} unique, {len(ranked)} selected (cap={max_queries})"
+    )
+    return ranked
+
+
 def fetch_breaking_headlines(
     specialty: str,
+    doctor_queries: list[str] | None = None,
     skip_cache: bool = False,
 ) -> list[dict]:
-    """Fetch raw headlines for one specialty using multiple targeted sub-queries.
+    """Fetch raw headlines for one specialty using the provided query list.
 
-    v6.0: Runs all sub-queries in SPECIALTY_SEARCH_QUERIES[specialty] as
-    separate Serper news calls (20 results each). Results are pooled and
-    tagged with specialty + source_query before returning. URL-level dedup
-    only here; semantic dedup happens downstream.
+    v7.0: Accepts doctor_queries built by build_batch_queries_for_specialty()
+    in the batch runner. Falls back to SPECIALTY_SEARCH_QUERIES if the list
+    is empty or None.
 
     Args:
         specialty: One of the 17 active specialties
+        doctor_queries: List of search queries for this specialty's batch.
+                        Built from the union of all active doctors' generated
+                        queries. May be empty/None (-> fallback).
         skip_cache: Bypass Redis cache
 
     Returns:
         Pooled raw headlines with specialty and source_query tags.
-        Typically 60-80 items before deduplication.
+        Typically 60-120 items before deduplication.
     """
-    queries = SPECIALTY_SEARCH_QUERIES.get(specialty, [specialty])
+    queries = doctor_queries if doctor_queries else SPECIALTY_SEARCH_QUERIES.get(specialty, [specialty])
     if isinstance(queries, str):
         queries = [queries]
 
