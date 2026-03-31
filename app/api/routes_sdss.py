@@ -1,14 +1,18 @@
-"""SDSS routes — async second opinion via GPU pod."""
+"""SDSS routes — async second opinion via GPU pod with webhook callback."""
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timezone
 from uuid import UUID
 
+import redis
 import requests as http_requests
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Optional
 
 from ..auth.security import get_current_user
 from ..config import settings
@@ -21,6 +25,11 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/sdss", tags=["sdss"])
 
+# Also mount webhook under /webhook (no /api prefix) for cleaner callback URLs
+webhook_router = APIRouter(tags=["sdss-webhook"])
+
+
+# ── Submit endpoint ─────────────────────────────────────────────
 
 @router.post("/submit", status_code=201, response_model=SdssSubmitResponse)
 async def sdss_submit(
@@ -45,6 +54,8 @@ async def sdss_submit(
     await db.commit()
     return SdssSubmitResponse(task_id=task.id)
 
+
+# ── Poll endpoint (fallback if WebSocket unavailable) ───────────
 
 @router.get("/task/{task_id}", response_model=SdssTaskResponse)
 async def sdss_task_status(
@@ -81,6 +92,8 @@ async def sdss_task_status(
     )
 
 
+# ── Health proxy ────────────────────────────────────────────────
+
 @router.get("/health")
 async def sdss_health():
     """Proxy health check to GPU pod."""
@@ -104,3 +117,63 @@ async def sdss_health():
     if result is None:
         return {"status": "offline"}
     return result
+
+
+# ── Webhook receiver (called by GPU pod) ────────────────────────
+
+class WebhookPayload(BaseModel):
+    task_id: str
+    status: str  # "complete" or "failed"
+    result: Optional[dict] = None
+    error: Optional[str] = None
+
+
+@webhook_router.post("/webhook/sdss/{task_id}")
+async def sdss_webhook(
+    task_id: UUID,
+    payload: WebhookPayload,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Webhook called by GPU pod when analysis completes or fails."""
+    # Validate shared secret if configured
+    secret = settings.SDSS_WEBHOOK_SECRET
+    if secret:
+        header_secret = request.headers.get("X-SECND-Secret", "")
+        if header_secret != secret:
+            raise HTTPException(status_code=403, detail="Invalid webhook secret")
+
+    result = await db.execute(
+        select(SdssTask).where(SdssTask.id == task_id)
+    )
+    task = result.scalar_one_or_none()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    now = datetime.now(timezone.utc)
+
+    if payload.status == "complete":
+        task.status = "complete"
+        task.result = payload.result
+        task.completed_at = now
+        ws_message = {"type": "complete", "task_id": str(task_id), "result": payload.result}
+    elif payload.status == "failed":
+        task.status = "failed"
+        task.error = payload.error or "GPU pod analysis failed"
+        task.completed_at = now
+        ws_message = {"type": "error", "task_id": str(task_id), "error": task.error}
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown status: {payload.status}")
+
+    await db.commit()
+
+    # Publish to Redis so WebSocket clients get notified
+    try:
+        r = redis.Redis.from_url(settings.REDIS_URL)
+        r.publish(f"sdss:{task_id}", json.dumps(ws_message, default=str))
+        r.close()
+    except Exception as e:
+        logger.error(f"Redis publish failed for sdss:{task_id}: {e}")
+
+    logger.info(f"SDSS webhook received for task {task_id}: status={payload.status}")
+    return {"status": "ok"}

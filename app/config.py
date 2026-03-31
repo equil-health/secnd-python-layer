@@ -71,6 +71,8 @@ class Settings(BaseSettings):
 
     # SDSS — GPU Pod (Second Opinion pipeline)
     SDSS_BASE_URL: str = ""  # e.g. https://xyz.ngrok-free.dev
+    SDSS_WEBHOOK_SECRET: str = ""  # shared secret for webhook validation
+    BACKEND_PUBLIC_URL: str = ""  # e.g. https://yourdomain.com (for callback URLs)
 
     # Firebase — Push Notifications
     FIREBASE_SERVICE_ACCOUNT_PATH: str = ""

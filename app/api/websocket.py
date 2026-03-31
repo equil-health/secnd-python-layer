@@ -73,3 +73,42 @@ async def ws_pipeline_status(websocket: WebSocket, case_id: str):
         manager.disconnect(case_id, websocket)
         await pubsub.unsubscribe(f"pipeline:{case_id}")
         await r.aclose()
+
+
+async def ws_sdss_status(websocket: WebSocket, task_id: str):
+    """WebSocket endpoint: subscribe to SDSS task status updates.
+
+    Requires ?token=<JWT> query param for authentication.
+    The webhook endpoint publishes to Redis channel sdss:{task_id}
+    when the GPU pod calls back with results.
+    """
+    token = websocket.query_params.get("token")
+    if not token:
+        await websocket.close(code=4001, reason="Missing authentication token")
+        return
+
+    try:
+        decode_token(token)
+    except Exception:
+        await websocket.close(code=4001, reason="Invalid or expired token")
+        return
+
+    await websocket.accept()
+
+    r = aioredis.from_url(settings.REDIS_URL)
+    pubsub = r.pubsub()
+    await pubsub.subscribe(f"sdss:{task_id}")
+
+    try:
+        async for message in pubsub.listen():
+            if message["type"] == "message":
+                data = json.loads(message["data"])
+                await websocket.send_json(data)
+
+                if data.get("type") in ("complete", "error"):
+                    break
+    except WebSocketDisconnect:
+        pass
+    finally:
+        await pubsub.unsubscribe(f"sdss:{task_id}")
+        await r.aclose()
