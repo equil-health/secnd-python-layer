@@ -174,3 +174,25 @@ class CaseListResponse(BaseModel):
     total: int
     page: int
     per_page: int
+
+
+# --- SDSS Async Task Schemas ---
+
+class SdssSubmitRequest(BaseModel):
+    case_text: str = Field(min_length=20)
+    mode: str = "standard"  # standard / zebra / medgemma
+    india_context: bool = False
+
+
+class SdssSubmitResponse(BaseModel):
+    task_id: UUID
+
+
+class SdssTaskResponse(BaseModel):
+    task_id: UUID
+    status: str
+    result: Optional[dict] = None
+    error: Optional[str] = None
+    elapsed_seconds: Optional[float] = None
+    created_at: datetime
+    completed_at: Optional[datetime] = None

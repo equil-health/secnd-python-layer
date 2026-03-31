@@ -69,6 +69,9 @@ class Settings(BaseSettings):
     BREAKING_DEDUP_THRESHOLD: float = 0.87
     BREAKING_REDIS_TTL_HOURS: int = 12
 
+    # SDSS — GPU Pod (Second Opinion pipeline)
+    SDSS_BASE_URL: str = ""  # e.g. https://xyz.ngrok-free.dev
+
     # Firebase — Push Notifications
     FIREBASE_SERVICE_ACCOUNT_PATH: str = ""
 

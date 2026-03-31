@@ -44,6 +44,8 @@ app.config_from_object({
         # Breaking — daily headline pipeline (Pulse v2)
         "breaking.daily_refresh": {"queue": "breaking_q"},
         "breaking.reset_monthly_free_reports": {"queue": "breaking_q"},
+        # SDSS — async second opinion via GPU pod
+        "sdss.run_analysis": {"queue": "sdss_q"},
     },
     "beat_schedule": {
         "pulse-daily-digests": {
@@ -72,4 +74,4 @@ app.config_from_object({
 })
 
 # Auto-discover tasks
-app.autodiscover_tasks(["app.pipeline", "app.pulse", "app.breaking"])
+app.autodiscover_tasks(["app.pipeline", "app.pulse", "app.breaking", "app.sdss"])
