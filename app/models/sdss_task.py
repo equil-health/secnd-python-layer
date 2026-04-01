@@ -18,6 +18,7 @@ class SdssTask(Base):
     mode = Column(String(20), nullable=False, default="standard")  # standard / zebra / medgemma
     india_context = Column(Boolean, nullable=False, default=False)
     pod_task_id = Column(String(100), nullable=True)  # GPU pod's own task ID
+    images = Column(JSONB, nullable=True)  # [{filename, content_type, base64}]
     status = Column(String(20), nullable=False, default="pending")  # pending / processing / complete / failed
     result = Column(JSONB, nullable=True)
     error = Column(Text, nullable=True)

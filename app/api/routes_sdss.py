@@ -1,6 +1,7 @@
 """SDSS routes — async second opinion via GPU pod with webhook callback."""
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -148,8 +149,9 @@ async def sdss_submit_with_files(
 ):
     """Submit a case with optional file attachments for SDSS analysis.
 
-    Files (PDF, DOCX, JPG, PNG) are processed for text extraction.
-    Extracted text is appended to case_text before sending to GPU pod.
+    - Images (JPG, PNG) are base64-encoded and sent to the GPU pod for
+      multimodal analysis.
+    - Documents (PDF, DOCX) are text-extracted and appended to case_text.
     """
     # Validate files
     for f in files:
@@ -159,45 +161,56 @@ async def sdss_submit_with_files(
                 detail=f"Unsupported file type: {f.filename} ({f.content_type}). Allowed: PDF, DOCX, JPG, PNG.",
             )
 
-    # Extract text from uploaded files
-    extracted_parts = []
+    # Process files: images → base64, documents → text extraction
+    image_payloads = []   # sent to GPU pod as base64
+    extracted_parts = []  # appended to case_text
     upload_dir = Path(settings.UPLOAD_DIR)
     saved_paths = []
 
     for f in files:
-        try:
-            # Save to temp location for extraction
-            task_dir = upload_dir / "sdss_temp"
-            task_dir.mkdir(parents=True, exist_ok=True)
-            ext = Path(f.filename).suffix
-            saved_name = f"{uuid_mod.uuid4()}{ext}"
-            saved_path = task_dir / saved_name
-            content = await f.read()
-            saved_path.write_bytes(content)
-            saved_paths.append(saved_path)
+        content = await f.read()
 
-            # Extract text
-            from ..pipeline.file_processor import extract_text_from_file
-            text = await asyncio.to_thread(extract_text_from_file, str(saved_path), f.content_type)
-            if text and text.strip():
-                extracted_parts.append(f"--- Content from {f.filename} ---\n{text.strip()}")
-        except Exception as e:
-            logger.warning(f"Failed to extract text from {f.filename}: {e}")
+        if f.content_type.startswith("image/"):
+            # Encode image as base64 for multimodal GPU pod
+            b64 = base64.b64encode(content).decode("ascii")
+            image_payloads.append({
+                "filename": f.filename,
+                "content_type": f.content_type,
+                "base64": b64,
+            })
+        else:
+            # Document — extract text
+            try:
+                task_dir = upload_dir / "sdss_temp"
+                task_dir.mkdir(parents=True, exist_ok=True)
+                ext = Path(f.filename).suffix
+                saved_name = f"{uuid_mod.uuid4()}{ext}"
+                saved_path = task_dir / saved_name
+                saved_path.write_bytes(content)
+                saved_paths.append(saved_path)
 
-    # Build combined case text
+                from ..pipeline.file_processor import extract_text_from_file
+                text = await asyncio.to_thread(extract_text_from_file, str(saved_path), f.content_type)
+                if text and text.strip():
+                    extracted_parts.append(f"--- Content from {f.filename} ---\n{text.strip()}")
+            except Exception as e:
+                logger.warning(f"Failed to extract text from {f.filename}: {e}")
+
+    # Build combined case text (documents appended, images sent separately)
     combined_text = case_text.strip()
     if extracted_parts:
         combined_text = combined_text + "\n\n" + "\n\n".join(extracted_parts) if combined_text else "\n\n".join(extracted_parts)
 
-    if len(combined_text) < 20:
-        raise HTTPException(status_code=400, detail="Case text (including file content) must be at least 20 characters.")
+    if len(combined_text) < 20 and not image_payloads:
+        raise HTTPException(status_code=400, detail="Please provide case text or upload clinical images.")
 
     # Create task and dispatch
     task = SdssTask(
         user_id=user.id,
-        case_text=combined_text,
+        case_text=combined_text or "",
         mode=mode,
         india_context=india_context,
+        images=image_payloads if image_payloads else None,
         status="pending",
     )
     db.add(task)
@@ -219,7 +232,7 @@ async def sdss_submit_with_files(
     tracker.log(
         "sdss", "sdss_gateway", "submit_with_files",
         user_id=str(user.id),
-        request_summary=combined_text[:500],
+        request_summary=combined_text[:500] if combined_text else f"[{len(image_payloads)} images]",
         status="success",
         input_chars=len(combined_text),
         metadata={
@@ -228,6 +241,7 @@ async def sdss_submit_with_files(
             "task_id": str(task.id),
             "files_count": len(files),
             "file_names": [f.filename for f in files][:10],
+            "images_count": len(image_payloads),
             "extracted_chars": sum(len(p) for p in extracted_parts),
         },
     )
