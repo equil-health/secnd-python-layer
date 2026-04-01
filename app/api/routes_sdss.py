@@ -3,16 +3,19 @@
 import asyncio
 import json
 import logging
+import os
+import uuid as uuid_mod
 from datetime import datetime, timezone
+from pathlib import Path
 from uuid import UUID
 
 import redis
 import requests as http_requests
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Optional
+from typing import List, Optional
 
 from ..auth.security import get_current_user
 from ..config import settings
@@ -118,6 +121,115 @@ async def sdss_submit(
         status="success",
         input_chars=len(body.case_text),
         metadata={"mode": body.mode, "india_context": body.india_context, "task_id": str(task.id)},
+    )
+
+    return SdssSubmitResponse(task_id=task.id)
+
+
+# ── Submit with files endpoint ─────────────────────────────────
+
+ALLOWED_CONTENT_TYPES = {
+    "application/pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/msword",
+    "image/jpeg",
+    "image/png",
+}
+
+
+@router.post("/submit-with-files", status_code=201, response_model=SdssSubmitResponse)
+async def sdss_submit_with_files(
+    case_text: str = Form(""),
+    mode: str = Form("standard"),
+    india_context: bool = Form(False),
+    files: List[UploadFile] = File(default=[]),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Submit a case with optional file attachments for SDSS analysis.
+
+    Files (PDF, DOCX, JPG, PNG) are processed for text extraction.
+    Extracted text is appended to case_text before sending to GPU pod.
+    """
+    # Validate files
+    for f in files:
+        if f.content_type not in ALLOWED_CONTENT_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported file type: {f.filename} ({f.content_type}). Allowed: PDF, DOCX, JPG, PNG.",
+            )
+
+    # Extract text from uploaded files
+    extracted_parts = []
+    upload_dir = Path(settings.UPLOAD_DIR)
+    saved_paths = []
+
+    for f in files:
+        try:
+            # Save to temp location for extraction
+            task_dir = upload_dir / "sdss_temp"
+            task_dir.mkdir(parents=True, exist_ok=True)
+            ext = Path(f.filename).suffix
+            saved_name = f"{uuid_mod.uuid4()}{ext}"
+            saved_path = task_dir / saved_name
+            content = await f.read()
+            saved_path.write_bytes(content)
+            saved_paths.append(saved_path)
+
+            # Extract text
+            from ..pipeline.file_processor import extract_text_from_file
+            text = await asyncio.to_thread(extract_text_from_file, str(saved_path), f.content_type)
+            if text and text.strip():
+                extracted_parts.append(f"--- Content from {f.filename} ---\n{text.strip()}")
+        except Exception as e:
+            logger.warning(f"Failed to extract text from {f.filename}: {e}")
+
+    # Build combined case text
+    combined_text = case_text.strip()
+    if extracted_parts:
+        combined_text = combined_text + "\n\n" + "\n\n".join(extracted_parts) if combined_text else "\n\n".join(extracted_parts)
+
+    if len(combined_text) < 20:
+        raise HTTPException(status_code=400, detail="Case text (including file content) must be at least 20 characters.")
+
+    # Create task and dispatch
+    task = SdssTask(
+        user_id=user.id,
+        case_text=combined_text,
+        mode=mode,
+        india_context=india_context,
+        status="pending",
+    )
+    db.add(task)
+    await db.flush()
+
+    from ..sdss.tasks import run_analysis
+    run_analysis.delay(str(task.id))
+
+    await db.commit()
+
+    # Clean up temp files
+    for p in saved_paths:
+        try:
+            p.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    # Audit
+    tracker.log(
+        "sdss", "sdss_gateway", "submit_with_files",
+        user_id=str(user.id),
+        request_summary=combined_text[:500],
+        status="success",
+        input_chars=len(combined_text),
+        metadata={
+            "mode": mode,
+            "india_context": india_context,
+            "task_id": str(task.id),
+            "files_count": len(files),
+            "file_names": [f.filename for f in files][:10],
+            "extracted_chars": sum(len(p) for p in extracted_parts),
+        },
     )
 
     return SdssSubmitResponse(task_id=task.id)
