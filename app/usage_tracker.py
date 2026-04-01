@@ -1,13 +1,16 @@
 """Usage tracking middleware — centralized API call logging.
 
 Every external API call (Gemini, MedGemma, Serper, OpenAlex, PubMed,
-Embeddings, Crossref) is logged to the ``usage_log`` table with:
+Embeddings, Crossref, SDSS GPU) is logged to the ``usage_log`` table with:
   - who (user_id, case_id)
   - what (module, service, operation)
   - request summary (truncated prompt/query)
   - response metrics (duration, tokens, chars, result count)
   - cost estimation
   - error tracking
+
+Writes are buffered in an in-memory queue and batch-flushed every 5 seconds
+(or 50 events), so ``tracker.log()`` is non-blocking (~nanoseconds).
 
 Usage from any module:
     from app.usage_tracker import tracker
@@ -29,7 +32,10 @@ Usage from any module:
                 duration_ms=elapsed_ms)
 """
 
+import atexit
+import json
 import logging
+import queue
 import threading
 import time
 from contextlib import contextmanager
@@ -48,6 +54,10 @@ _engine_lock = threading.Lock()
 # Thread-local storage for context (case_id, user_id)
 _context = threading.local()
 
+# Buffered writer constants
+_FLUSH_INTERVAL = 5.0   # seconds between flushes
+_FLUSH_BATCH_SIZE = 50   # max events per flush
+
 # Cost per unit (USD) — approximate, updated as needed
 COST_TABLE = {
     "gemini": {"input_per_1k_chars": 0.0000125, "output_per_1k_chars": 0.00005},
@@ -58,7 +68,27 @@ COST_TABLE = {
     "openalex": {"per_call": 0.0},  # free API
     "pubmed": {"per_call": 0.0},  # free API
     "crossref": {"per_call": 0.0},  # free API
+    # SDSS GPU pod
+    "sdss_gpu": {"per_call": 0.15},  # GPU pod processing cost estimate
+    "sdss_serper": {"per_call": 0.004},  # Serper calls made by GPU pod
 }
+
+_INSERT_SQL = text("""
+    INSERT INTO usage_log (
+        user_id, case_id, module, service, operation,
+        request_summary, model, status, error_message,
+        duration_ms, input_tokens, output_tokens,
+        input_chars, output_chars, num_results,
+        estimated_cost_usd, metadata
+    ) VALUES (
+        CAST(:user_id AS uuid), CAST(:case_id AS uuid),
+        :module, :service, :operation,
+        :request_summary, :model, :status, :error_message,
+        :duration_ms, :input_tokens, :output_tokens,
+        :input_chars, :output_chars, :num_results,
+        :estimated_cost_usd, CAST(:metadata AS jsonb)
+    )
+""")
 
 
 def _get_engine():
@@ -84,6 +114,77 @@ def _estimate_cost(service: str, input_chars: int = 0, output_chars: int = 0,
         cost += (output_chars / 1000) * rates["output_per_1k_chars"]
     return cost
 
+
+# ── Buffered Writer ─────────────────────────────────────────────
+
+class _BufferedWriter:
+    """Queue-backed background writer for usage_log.
+
+    ``put()`` is non-blocking (~nanoseconds).  A daemon thread wakes
+    every ``_FLUSH_INTERVAL`` seconds and batch-INSERTs up to
+    ``_FLUSH_BATCH_SIZE`` rows in a single transaction.
+    """
+
+    def __init__(self):
+        self._queue: queue.Queue = queue.Queue()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._started = False
+        self._start_lock = threading.Lock()
+
+    def _ensure_started(self):
+        if self._started:
+            return
+        with self._start_lock:
+            if self._started:
+                return
+            self._thread = threading.Thread(target=self._flush_loop, daemon=True, name="usage-writer")
+            self._thread.start()
+            self._started = True
+            atexit.register(self.shutdown)
+
+    def put(self, params: dict):
+        self._ensure_started()
+        self._queue.put(params)
+        if self._queue.qsize() > 500:
+            logger.warning("Usage tracking queue depth > 500 — possible backpressure")
+
+    def _flush_loop(self):
+        while not self._stop.is_set():
+            self._stop.wait(timeout=_FLUSH_INTERVAL)
+            self._drain()
+
+    def _drain(self):
+        batch = []
+        while len(batch) < _FLUSH_BATCH_SIZE:
+            try:
+                batch.append(self._queue.get_nowait())
+            except queue.Empty:
+                break
+        if batch:
+            self._write_batch(batch)
+
+    def _write_batch(self, batch: list[dict]):
+        try:
+            engine = _get_engine()
+            with engine.begin() as conn:
+                for params in batch:
+                    conn.execute(_INSERT_SQL, params)
+        except Exception as e:
+            logger.warning("Usage tracking batch write failed (%d rows): %s", len(batch), e)
+
+    def shutdown(self):
+        self._stop.set()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=3)
+        # Drain remaining events synchronously
+        self._drain()
+
+
+_writer = _BufferedWriter()
+
+
+# ── Usage Tracker ───────────────────────────────────────────────
 
 class UsageTracker:
     """Centralized usage tracking for all external API calls."""
@@ -127,7 +228,7 @@ class UsageTracker:
         estimated_cost_usd: float = None,
         metadata: dict = None,
     ):
-        """Write a single usage log entry to the database."""
+        """Enqueue a usage log entry for background batch-write."""
         user_id = user_id or self._get_context_user_id()
         case_id = case_id or self._get_context_case_id()
 
@@ -144,45 +245,25 @@ class UsageTracker:
             request_summary = request_summary[:497] + "..."
 
         try:
-            engine = _get_engine()
-            with engine.begin() as conn:
-                conn.execute(
-                    text("""
-                        INSERT INTO usage_log (
-                            user_id, case_id, module, service, operation,
-                            request_summary, model, status, error_message,
-                            duration_ms, input_tokens, output_tokens,
-                            input_chars, output_chars, num_results,
-                            estimated_cost_usd, metadata
-                        ) VALUES (
-                            CAST(:user_id AS uuid), CAST(:case_id AS uuid),
-                            :module, :service, :operation,
-                            :request_summary, :model, :status, :error_message,
-                            :duration_ms, :input_tokens, :output_tokens,
-                            :input_chars, :output_chars, :num_results,
-                            :estimated_cost_usd, CAST(:metadata AS jsonb)
-                        )
-                    """),
-                    {
-                        "user_id": user_id,
-                        "case_id": case_id,
-                        "module": module,
-                        "service": service,
-                        "operation": operation,
-                        "request_summary": request_summary,
-                        "model": model,
-                        "status": status,
-                        "error_message": error_message,
-                        "duration_ms": duration_ms,
-                        "input_tokens": input_tokens,
-                        "output_tokens": output_tokens,
-                        "input_chars": input_chars,
-                        "output_chars": output_chars,
-                        "num_results": num_results,
-                        "estimated_cost_usd": estimated_cost_usd,
-                        "metadata": __import__("json").dumps(metadata) if metadata else None,
-                    },
-                )
+            _writer.put({
+                "user_id": user_id,
+                "case_id": case_id,
+                "module": module,
+                "service": service,
+                "operation": operation,
+                "request_summary": request_summary,
+                "model": model,
+                "status": status,
+                "error_message": error_message,
+                "duration_ms": duration_ms,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "input_chars": input_chars,
+                "output_chars": output_chars,
+                "num_results": num_results,
+                "estimated_cost_usd": estimated_cost_usd,
+                "metadata": json.dumps(metadata) if metadata else None,
+            })
         except Exception as e:
             # Never let usage tracking break the actual pipeline
             logger.warning("Usage tracking failed: %s", e)

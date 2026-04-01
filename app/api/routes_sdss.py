@@ -20,6 +20,7 @@ from ..db.database import get_db
 from ..models.sdss_task import SdssTask
 from ..models.schemas import SdssSubmitRequest, SdssSubmitResponse, SdssTaskResponse
 from ..models.user import User
+from ..usage_tracker import tracker
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,62 @@ router = APIRouter(prefix="/api/sdss", tags=["sdss"])
 
 # Also mount webhook under /webhook (no /api prefix) for cleaner callback URLs
 webhook_router = APIRouter(tags=["sdss-webhook"])
+
+
+# ── Helpers ────────────────────────────────────────────────────
+
+def _publish_redis(task_id, message: dict):
+    """Publish a message to Redis for WebSocket clients."""
+    try:
+        r = redis.Redis.from_url(settings.REDIS_URL)
+        r.publish(f"sdss:{task_id}", json.dumps(message, default=str))
+        r.close()
+    except Exception as e:
+        logger.error(f"Redis publish failed for sdss:{task_id}: {e}")
+
+
+def _log_audit_data(task_id: str, user_id: str, audit_data: dict):
+    """Log GPU pod audit metadata to usage_log."""
+    if not audit_data or not isinstance(audit_data, dict):
+        return
+
+    # Main GPU processing entry
+    tracker.log(
+        "sdss", "sdss_gpu", "gpu_processing",
+        user_id=user_id,
+        model=audit_data.get("model"),
+        status="success",
+        duration_ms=audit_data.get("total_duration_ms"),
+        input_tokens=audit_data.get("input_tokens"),
+        output_tokens=audit_data.get("output_tokens"),
+        metadata={
+            "task_id": task_id,
+            "stage_timings": audit_data.get("stage_timings"),
+            "serper_queries": audit_data.get("serper_queries"),
+            "total_llm_calls": audit_data.get("total_llm_calls"),
+            "kg_triplets_checked": audit_data.get("kg_triplets_checked"),
+            "hallucinations_detected": audit_data.get("hallucinations_detected"),
+        },
+    )
+
+    # Separate serper usage entry (for cost tracking)
+    serper_count = audit_data.get("serper_queries")
+    if isinstance(serper_count, int) and serper_count > 0:
+        tracker.log(
+            "sdss", "sdss_serper", "gpu_serper_calls",
+            user_id=user_id,
+            num_results=serper_count,
+            metadata={"task_id": task_id},
+        )
+    elif isinstance(serper_count, list) and len(serper_count) > 0:
+        # serper_queries might be a list of query strings
+        tracker.log(
+            "sdss", "sdss_serper", "gpu_serper_calls",
+            user_id=user_id,
+            num_results=len(serper_count),
+            request_summary="; ".join(str(q) for q in serper_count[:10])[:500],
+            metadata={"task_id": task_id},
+        )
 
 
 # ── Submit endpoint ─────────────────────────────────────────────
@@ -52,6 +109,17 @@ async def sdss_submit(
     run_analysis.delay(str(task.id))
 
     await db.commit()
+
+    # Audit: log submission
+    tracker.log(
+        "sdss", "sdss_gateway", "submit",
+        user_id=str(user.id),
+        request_summary=body.case_text[:500],
+        status="success",
+        input_chars=len(body.case_text),
+        metadata={"mode": body.mode, "india_context": body.india_context, "task_id": str(task.id)},
+    )
+
     return SdssSubmitResponse(task_id=task.id)
 
 
@@ -152,11 +220,18 @@ async def sdss_webhook(
 
     now = datetime.now(timezone.utc)
 
+    # Extract _audit data before storing clinical result
+    audit_data = None
+    clinical_result = payload.result
+    if payload.result and isinstance(payload.result, dict):
+        audit_data = payload.result.pop("_audit", None)
+        clinical_result = payload.result
+
     if payload.status == "complete":
         task.status = "complete"
-        task.result = payload.result
+        task.result = clinical_result
         task.completed_at = now
-        ws_message = {"type": "complete", "task_id": str(task_id), "result": payload.result}
+        ws_message = {"type": "complete", "task_id": str(task_id), "result": clinical_result}
     elif payload.status == "failed":
         task.status = "failed"
         task.error = payload.error or "GPU pod analysis failed"
@@ -168,12 +243,21 @@ async def sdss_webhook(
     await db.commit()
 
     # Publish to Redis so WebSocket clients get notified
-    try:
-        r = redis.Redis.from_url(settings.REDIS_URL)
-        r.publish(f"sdss:{task_id}", json.dumps(ws_message, default=str))
-        r.close()
-    except Exception as e:
-        logger.error(f"Redis publish failed for sdss:{task_id}: {e}")
+    _publish_redis(task_id, ws_message)
+
+    # Audit: log webhook receipt
+    tracker.log(
+        "sdss", "sdss_gateway", "webhook_received",
+        user_id=str(task.user_id),
+        request_summary=f"task={task_id} status={payload.status}",
+        status="success" if payload.status == "complete" else "error",
+        error_message=payload.error if payload.status == "failed" else None,
+        metadata={"task_id": str(task_id), "has_audit": audit_data is not None},
+    )
+
+    # Audit: log GPU resource usage from _audit data
+    if audit_data:
+        _log_audit_data(str(task_id), str(task.user_id), audit_data)
 
     logger.info(f"SDSS webhook received for task {task_id}: status={payload.status}")
     return {"status": "ok"}

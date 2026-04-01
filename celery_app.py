@@ -46,6 +46,7 @@ app.config_from_object({
         "breaking.reset_monthly_free_reports": {"queue": "breaking_q"},
         # SDSS — async second opinion via GPU pod
         "sdss.run_analysis": {"queue": "sdss_q"},
+        "sdss.poll_gpu_result": {"queue": "sdss_q"},
     },
     "beat_schedule": {
         "pulse-daily-digests": {
