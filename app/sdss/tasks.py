@@ -236,7 +236,7 @@ def poll_gpu_result(self, task_id: str, pod_task_id: str):
 
         base_url = settings.SDSS_BASE_URL.rstrip("/")
         resp = http_requests.get(
-            f"{base_url}/second_opinion/status/{pod_task_id}",
+            f"{base_url}/task/{pod_task_id}",
             headers=NGROK_HEADERS,
             timeout=15,
         )
