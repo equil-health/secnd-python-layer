@@ -161,9 +161,9 @@ async def sdss_submit_with_files(
                 detail=f"Unsupported file type: {f.filename} ({f.content_type}). Allowed: PDF, DOCX, JPG, PNG.",
             )
 
-    # Process files: images → base64, documents → text extraction
-    image_payloads = []   # sent to GPU pod as base64
-    extracted_parts = []  # appended to case_text
+    # Split files: images → base64 for GPU pod, documents → text extraction on DO
+    image_payloads = []   # sent to GPU pod as base64 in "images" array
+    extracted_parts = []  # text-extracted and appended to case_text
     upload_dir = Path(settings.UPLOAD_DIR)
     saved_paths = []
 
@@ -176,10 +176,10 @@ async def sdss_submit_with_files(
             image_payloads.append({
                 "filename": f.filename,
                 "content_type": f.content_type,
-                "base64": b64,
+                "data": b64,
             })
         else:
-            # Document — extract text
+            # Document — extract text on DO server, append to case_text
             try:
                 task_dir = upload_dir / "sdss_temp"
                 task_dir.mkdir(parents=True, exist_ok=True)
@@ -196,12 +196,12 @@ async def sdss_submit_with_files(
             except Exception as e:
                 logger.warning(f"Failed to extract text from {f.filename}: {e}")
 
-    # Build combined case text (documents appended, images sent separately)
+    # Build combined case text (with extracted document text appended)
     combined_text = case_text.strip()
     if extracted_parts:
         combined_text = combined_text + "\n\n" + "\n\n".join(extracted_parts) if combined_text else "\n\n".join(extracted_parts)
 
-    if len(combined_text) < 20 and not image_payloads:
+    if not combined_text and not image_payloads:
         raise HTTPException(status_code=400, detail="Please provide case text or upload clinical images.")
 
     # Create task and dispatch
@@ -240,8 +240,9 @@ async def sdss_submit_with_files(
             "india_context": india_context,
             "task_id": str(task.id),
             "files_count": len(files),
-            "file_names": [f.filename for f in files][:10],
             "images_count": len(image_payloads),
+            "docs_count": len(extracted_parts),
+            "file_names": [f.filename for f in files][:10],
             "extracted_chars": sum(len(p) for p in extracted_parts),
         },
     )

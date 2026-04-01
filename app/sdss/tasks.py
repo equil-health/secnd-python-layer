@@ -126,7 +126,7 @@ def run_analysis(self, task_id: str):
         if callback_url:
             payload["callback_url"] = callback_url
         if task.images:
-            payload["images"] = task.images  # [{filename, content_type, base64}]
+            payload["images"] = task.images  # [{filename, content_type, data}]
 
         logger.info(f"SDSS task {task_id}: submitting to {url} (mode={task.mode}, callback={callback_url})")
 
