@@ -21,6 +21,7 @@ class SdssTask(Base):
     images = Column(JSONB, nullable=True)  # [{filename, content_type, base64}]
     status = Column(String(20), nullable=False, default="pending")  # pending / processing / complete / failed
     result = Column(JSONB, nullable=True)
+    audit_report = Column(JSONB, nullable=True)  # Full pipeline audit trail from GPU pod
     error = Column(Text, nullable=True)
 
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))

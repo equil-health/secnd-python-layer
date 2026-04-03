@@ -13,7 +13,6 @@ from uuid import UUID
 import redis
 import requests as http_requests
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional
@@ -287,6 +286,87 @@ async def sdss_task_status(
     )
 
 
+# ── List tasks endpoint (for history/archive) ─────────────────────
+
+@router.get("/tasks", response_model=dict)
+async def sdss_list_tasks(
+    page: int = 1,
+    per_page: int = 20,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """List all SDSS tasks for the current user (paginated, newest first)."""
+    from sqlalchemy import func
+
+    offset = (max(1, page) - 1) * per_page
+    per_page = min(per_page, 100)
+
+    # Count total
+    count_q = select(func.count()).select_from(SdssTask).where(SdssTask.user_id == user.id)
+    total = (await db.execute(count_q)).scalar() or 0
+
+    # Fetch page
+    q = (
+        select(SdssTask)
+        .where(SdssTask.user_id == user.id)
+        .order_by(SdssTask.created_at.desc())
+        .offset(offset)
+        .limit(per_page)
+    )
+    rows = (await db.execute(q)).scalars().all()
+
+    tasks = []
+    now = datetime.now(timezone.utc)
+    for t in rows:
+        # Extract summary fields from result for list display
+        result = t.result or {}
+        elapsed = None
+        if t.completed_at and t.created_at:
+            elapsed = round((t.completed_at - t.created_at).total_seconds(), 1)
+        elif t.created_at:
+            elapsed = round((now - t.created_at).total_seconds(), 1)
+
+        tasks.append({
+            "task_id": str(t.id),
+            "status": t.status,
+            "mode": t.mode,
+            "case_text_preview": (t.case_text or "")[:120],
+            "top_diagnosis": result.get("top_diagnosis", ""),
+            "primary_diagnosis": result.get("primary_diagnosis", ""),
+            "has_critical_flags": result.get("has_critical_flags", False),
+            "evidence_count": result.get("evidence_count", 0),
+            "has_audit": t.audit_report is not None,
+            "elapsed_seconds": elapsed,
+            "created_at": t.created_at.isoformat() if t.created_at else None,
+            "completed_at": t.completed_at.isoformat() if t.completed_at else None,
+        })
+
+    return {"tasks": tasks, "total": total, "page": page, "per_page": per_page}
+
+
+# ── Single task with audit endpoint ───────────────────────────────
+
+@router.get("/task/{task_id}/audit")
+async def sdss_task_audit(
+    task_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Get the audit report for a specific SDSS task."""
+    result = await db.execute(
+        select(SdssTask).where(SdssTask.id == task_id)
+    )
+    task = result.scalar_one_or_none()
+    if not task or task.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    return {
+        "task_id": str(task.id),
+        "has_audit": task.audit_report is not None,
+        "audit_report": task.audit_report,
+    }
+
+
 # ── Health proxy ────────────────────────────────────────────────
 
 @router.get("/health")
@@ -316,21 +396,21 @@ async def sdss_health():
 
 # ── Webhook receiver (called by GPU pod) ────────────────────────
 
-class WebhookPayload(BaseModel):
-    task_id: str
-    status: str  # "complete" or "failed"
-    result: Optional[dict] = None
-    error: Optional[str] = None
-
 
 @webhook_router.post("/webhook/sdss/{task_id}")
 async def sdss_webhook(
     task_id: UUID,
-    payload: WebhookPayload,
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    """Webhook called by GPU pod when analysis completes or fails."""
+    """Webhook called by GPU pod when analysis completes or fails.
+
+    Accepts any JSON body — the GPU pod may send the result in various
+    shapes:
+      1. {"status": "complete", "result": {...}}          (nested)
+      2. {"status": "complete", "p2_differential": [...]} (flat — clinical fields at top level)
+      3. {"task_id": "...", "status": "complete", ...}    (with or without task_id)
+    """
     # Validate shared secret if configured
     secret = settings.SDSS_WEBHOOK_SECRET
     if secret:
@@ -338,34 +418,58 @@ async def sdss_webhook(
         if header_secret != secret:
             raise HTTPException(status_code=403, detail="Invalid webhook secret")
 
-    result = await db.execute(
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Expected JSON object")
+
+    result_row = await db.execute(
         select(SdssTask).where(SdssTask.id == task_id)
     )
-    task = result.scalar_one_or_none()
+    task = result_row.scalar_one_or_none()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
 
     now = datetime.now(timezone.utc)
+    pod_status = body.get("status", "complete")
+    pod_error = body.get("error")
 
-    # Extract _audit data before storing clinical result
+    # Extract clinical result — handle both nested and flat shapes
+    clinical_result = body.get("result")
+    if clinical_result is None:
+        # Flat shape: clinical fields are at the top level alongside "status"
+        # Copy body and remove meta keys to get pure clinical data
+        clinical_result = {k: v for k, v in body.items() if k not in ("status", "error", "task_id")}
+
+    # Extract _audit data before storing — save full audit to dedicated column
     audit_data = None
-    clinical_result = payload.result
-    if payload.result and isinstance(payload.result, dict):
-        audit_data = payload.result.pop("_audit", None)
-        clinical_result = payload.result
+    if isinstance(clinical_result, dict):
+        audit_data = clinical_result.pop("_audit", None)
 
-    if payload.status == "complete":
+    if pod_status == "complete":
         task.status = "complete"
         task.result = clinical_result
+        task.audit_report = audit_data  # Full pipeline audit trail
         task.completed_at = now
         ws_message = {"type": "complete", "task_id": str(task_id), "result": clinical_result}
-    elif payload.status == "failed":
+    elif pod_status == "failed":
         task.status = "failed"
-        task.error = payload.error or "GPU pod analysis failed"
+        task.error = pod_error or "GPU pod analysis failed"
         task.completed_at = now
         ws_message = {"type": "error", "task_id": str(task_id), "error": task.error}
     else:
-        raise HTTPException(status_code=400, detail=f"Unknown status: {payload.status}")
+        # Unknown status — treat as complete if there's any data
+        if clinical_result and any(k in clinical_result for k in ("p1_differential", "p2_differential", "synthesis")):
+            task.status = "complete"
+            task.result = clinical_result
+            task.completed_at = now
+            ws_message = {"type": "complete", "task_id": str(task_id), "result": clinical_result}
+            logger.warning(f"SDSS webhook {task_id}: unknown status '{pod_status}', treating as complete (has clinical data)")
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown status: {pod_status}")
 
     await db.commit()
 
@@ -376,15 +480,15 @@ async def sdss_webhook(
     tracker.log(
         "sdss", "sdss_gateway", "webhook_received",
         user_id=str(task.user_id),
-        request_summary=f"task={task_id} status={payload.status}",
-        status="success" if payload.status == "complete" else "error",
-        error_message=payload.error if payload.status == "failed" else None,
-        metadata={"task_id": str(task_id), "has_audit": audit_data is not None},
+        request_summary=f"task={task_id} status={pod_status}",
+        status="success" if task.status == "complete" else "error",
+        error_message=pod_error if task.status == "failed" else None,
+        metadata={"task_id": str(task_id), "has_audit": audit_data is not None, "body_keys": list(body.keys())[:20]},
     )
 
     # Audit: log GPU resource usage from _audit data
     if audit_data:
         _log_audit_data(str(task_id), str(task.user_id), audit_data)
 
-    logger.info(f"SDSS webhook received for task {task_id}: status={payload.status}")
+    logger.info(f"SDSS webhook received for task {task_id}: status={pod_status}, result_keys={list((clinical_result or {}).keys())[:10]}")
     return {"status": "ok"}
