@@ -246,7 +246,10 @@ def poll_gpu_result(self, task_id: str, pod_task_id: str):
         pod_status = data.get("status")
 
         if pod_status == "complete":
-            result = data.get("result", {})
+            result = data.get("result")
+            if result is None:
+                # Flat shape: clinical fields at top level alongside "status"
+                result = {k: v for k, v in data.items() if k not in ("status", "error", "task_id")}
             audit_data = None
             if isinstance(result, dict):
                 audit_data = result.pop("_audit", None)

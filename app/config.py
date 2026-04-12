@@ -77,6 +77,11 @@ class Settings(BaseSettings):
     # Firebase — Push Notifications
     FIREBASE_SERVICE_ACCOUNT_PATH: str = ""
 
+    # Chat — Open WebUI + MedGemma
+    OPENWEBUI_BASE_URL: str = ""   # e.g. http://localhost:3000
+    OPENWEBUI_API_KEY: str = ""    # sk-... API key from Open WebUI
+    CHAT_MODEL: str = "medgemma"   # model name as registered in Open WebUI/Ollama
+
     # Auth / JWT
     JWT_SECRET_KEY: str = "change-me-in-production"
     JWT_ALGORITHM: str = "HS256"

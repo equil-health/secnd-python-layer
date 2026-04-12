@@ -17,6 +17,7 @@ from .api.routes_admin import router as admin_router
 from .api.routes_pulse import router as pulse_router
 from .api.routes_breaking import router as breaking_router
 from .api.routes_sdss import router as sdss_router, webhook_router as sdss_webhook_router
+from .api.routes_chat import router as chat_router
 from .api.websocket import ws_pipeline_status, ws_sdss_status
 
 
@@ -59,6 +60,7 @@ app.include_router(pulse_router)
 app.include_router(breaking_router)
 app.include_router(sdss_router)
 app.include_router(sdss_webhook_router)
+app.include_router(chat_router)
 
 # WebSocket
 app.websocket("/ws/cases/{case_id}/status")(ws_pipeline_status)
