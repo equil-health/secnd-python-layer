@@ -51,3 +51,25 @@ async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
 async def get_me(user: User = Depends(get_current_user)):
     """GET /api/auth/me — Current user profile."""
     return UserResponse.model_validate(user)
+
+
+@router.post("/refresh", response_model=TokenResponse)
+async def refresh(user: User = Depends(get_current_user)):
+    """POST /api/auth/refresh — Issue a fresh JWT for the current session.
+
+    Called silently by the client before long-running uploads or when the
+    existing token is close to expiry, so a clinician who spent 30+ min
+    filling in a case doesn't lose their work to a 401 on submit.
+    """
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="Account is deactivated")
+
+    if user.is_demo and user.expires_at:
+        if datetime.now(timezone.utc) > user.expires_at:
+            raise HTTPException(status_code=403, detail="Demo account has expired")
+
+    token = create_access_token(str(user.id), user.role)
+    return TokenResponse(
+        access_token=token,
+        user=UserResponse.model_validate(user),
+    )
