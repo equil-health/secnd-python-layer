@@ -159,6 +159,31 @@ class _BaseTUAdapter:
             f"PULSE_DEBUG adapter[{self.name}]: tool={self.tool_name} args_keys={list(args.keys())} "
             f"query='{query[:80]}' → {len(records)} raw, {len(normalised)} normalised"
         )
+        # If we got a response but extracted zero records, dump the inner
+        # `data` shape so we can see which key holds the result list (or
+        # whether the response is an error envelope we missed).
+        if not records and isinstance(resp, dict):
+            data = resp.get("data")
+            if isinstance(data, dict):
+                inner_keys = list(data.keys())[:12]
+                inner_lens = {
+                    k: (len(v) if hasattr(v, "__len__") else type(v).__name__)
+                    for k, v in list(data.items())[:12]
+                }
+                logger.warning(
+                    f"PULSE_DEBUG adapter[{self.name}]: ZERO records — data is dict, "
+                    f"keys={inner_keys}, value_lens={inner_lens}"
+                )
+            elif isinstance(data, list):
+                logger.warning(
+                    f"PULSE_DEBUG adapter[{self.name}]: ZERO records — data is list(len={len(data)}), "
+                    f"first_item_type={type(data[0]).__name__ if data else 'empty'}"
+                )
+            else:
+                logger.warning(
+                    f"PULSE_DEBUG adapter[{self.name}]: ZERO records — data type={type(data).__name__}, "
+                    f"top_keys={list(resp.keys())[:8]}"
+                )
         return normalised
 
 
@@ -197,7 +222,9 @@ class SemanticScholarAdapter(_BaseTUAdapter):
     name = "semantic_scholar"
     tool_name = "SemanticScholar_search_papers"
     # Same problem as PubMed — abstracts arrive only when explicitly asked.
-    extra_args = {"include_abstract": True, "sort": "citationCount:desc"}
+    # `sort` accepts only bare values (relevance|citationCount|publicationDate);
+    # the ":desc" suffix triggered HTTP 400 from the upstream API.
+    extra_args = {"include_abstract": True, "sort": "citationCount"}
 
 
 class CrossrefAdapter(_BaseTUAdapter):

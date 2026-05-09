@@ -139,12 +139,41 @@ def normalise(record: dict, *, source: str) -> dict | None:
         or ""
     )
     authors = _author_names(record.get("authors") or record.get("author"))
-    published = _published_date(
-        record.get("published_date")
-        or record.get("publication_date")
-        or record.get("date")
-        or record.get("year")
-    )
+    # PubMed via TU surfaces dates under pubdate/epubdate/sortpubdate; OpenAlex
+    # uses publication_year; Crossref uses created/issued/published-print
+    # (each often as a list of dicts). Try a wide set of aliases — the first
+    # one that yields a parseable YYYY-MM-DD wins.
+    published = ""
+    for cand in (
+        record.get("published_date"),
+        record.get("publication_date"),
+        record.get("pubdate"),
+        record.get("epubdate"),
+        record.get("sortpubdate"),
+        record.get("date"),
+        record.get("issued"),
+        record.get("created"),
+        record.get("published-print"),
+        record.get("published-online"),
+        record.get("publication_year"),
+        record.get("year"),
+    ):
+        if not cand:
+            continue
+        # Crossref-style {'date-parts': [[2024, 3, 5]]}
+        if isinstance(cand, dict):
+            dp = cand.get("date-parts")
+            if isinstance(dp, list) and dp and isinstance(dp[0], list) and dp[0]:
+                parts = dp[0]
+                cand = "-".join(str(int(p)) for p in parts[:3])
+            else:
+                cand = _coerce_str(cand)
+        elif isinstance(cand, list) and cand:
+            cand = _coerce_str(cand[0])
+        parsed = _published_date(cand)
+        if parsed:
+            published = parsed
+            break
     pub_types = [
         _coerce_str(p) for p in _as_list(record.get("pub_types") or record.get("type"))
         if _coerce_str(p)
