@@ -67,6 +67,11 @@ class Settings(BaseSettings):
     PULSE_V2_SOURCES: str = "pubmed,europe_pmc,openalex"  # comma-separated, order = priority
     PULSE_V2_MAX_PARALLEL: int = 4
     PULSE_V2_FALLBACK_TO_V1: bool = True
+    # Per-source over-fetch: each adapter is asked for
+    # max(PULSE_MAX_ARTICLES_PER_DIGEST * MULTIPLIER, MIN). Higher = better
+    # dedup pool, more API cost. 2x is a reasonable default.
+    PULSE_V2_OVERFETCH_MULTIPLIER: int = 2
+    PULSE_V2_OVERFETCH_MIN: int = 10
 
     # Breaking — Daily Headline Pipeline
     BREAKING_ENABLED: bool = True

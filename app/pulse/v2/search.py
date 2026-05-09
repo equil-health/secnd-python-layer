@@ -78,7 +78,9 @@ def search(
         return []
 
     # Over-fetch per source so the post-merge truncation has headroom
-    per_source_limit = max(max_articles * 2, 10)
+    multiplier = max(1, settings.PULSE_V2_OVERFETCH_MULTIPLIER or 1)
+    floor = max(1, settings.PULSE_V2_OVERFETCH_MIN or 1)
+    per_source_limit = max(max_articles * multiplier, floor)
 
     buckets: list[list[dict]] = []
 
