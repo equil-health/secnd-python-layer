@@ -24,12 +24,12 @@ logger = logging.getLogger(__name__)
 # Candidate parameter names we'll try for each logical slot, in order.
 # The first one that appears in the tool's schema wins.
 QUERY_PARAM_CANDIDATES = (
-    "query", "q", "search_term", "search_query", "keyword", "keywords",
-    "search_keywords", "term", "text", "topic",
+    "query", "search", "q", "search_term", "search_query",
+    "keyword", "keywords", "search_keywords", "term", "text", "topic",
 )
 LIMIT_PARAM_CANDIDATES = (
-    "limit", "max_results", "n_results", "top_k", "size", "page_size",
-    "num_results", "count", "rows",
+    "limit", "max_results", "per_page", "n_results", "top_k", "size",
+    "page_size", "num_results", "count", "rows",
 )
 
 
@@ -160,6 +160,9 @@ class _BaseTUAdapter:
 class PubMedAdapter(_BaseTUAdapter):
     name = "pubmed"
     tool_name = "PubMed_search_articles"
+    # Without this PubMed returns title+pmid only — abstracts are
+    # fetched lazily, and our relevance scorer would always 0 these out.
+    extra_args = {"include_abstract": True, "sort": "relevance"}
 
 
 class EuropePMCAdapter(_BaseTUAdapter):
@@ -171,6 +174,9 @@ class OpenAlexWorksAdapter(_BaseTUAdapter):
     """Direct works search — broader coverage."""
     name = "openalex"
     tool_name = "openalex_search_works"
+    # OpenAlex's native param is `search`; `query` is documented as an
+    # alias today but we pin to native to avoid future breakage.
+    extra_args = {"sort": "relevance_score:desc"}
 
 
 class OpenAlexLitAdapter(_BaseTUAdapter):
@@ -182,11 +188,16 @@ class OpenAlexLitAdapter(_BaseTUAdapter):
 class SemanticScholarAdapter(_BaseTUAdapter):
     name = "semantic_scholar"
     tool_name = "SemanticScholar_search_papers"
+    # Same problem as PubMed — abstracts arrive only when explicitly asked.
+    extra_args = {"include_abstract": True, "sort": "citationCount:desc"}
 
 
 class CrossrefAdapter(_BaseTUAdapter):
     name = "crossref"
     tool_name = "Crossref_search_works"
+    # Crossref has lots of metadata-only / book / dataset records — keep
+    # to journal articles with abstracts to compete with EPMC quality.
+    extra_args = {"filter": "type:journal-article,has-abstract:true"}
 
 
 class CoreAdapter(_BaseTUAdapter):

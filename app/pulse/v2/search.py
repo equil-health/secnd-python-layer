@@ -82,8 +82,6 @@ def search(
     floor = max(1, settings.PULSE_V2_OVERFETCH_MIN or 1)
     per_source_limit = max(max_articles * multiplier, floor)
 
-    buckets: list[list[dict]] = []
-
     def _run(adapter):
         return adapter.search(
             specialty=specialty,
@@ -95,16 +93,21 @@ def search(
             skip_cache=skip_cache,
         )
 
+    # Preserve PULSE_V2_SOURCES order so the merger's "first-source-wins"
+    # tie-breaker reflects user-configured priority, not whoever was fastest.
     max_workers = min(len(adapters), settings.PULSE_V2_MAX_PARALLEL or len(adapters))
+    buckets: list[list[dict]] = [[] for _ in adapters]
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(_run, a): a.name for a in adapters}
+        futures = {pool.submit(_run, a): i for i, a in enumerate(adapters)}
         for fut in as_completed(futures):
-            name = futures[fut]
+            i = futures[fut]
             try:
-                buckets.append(fut.result() or [])
+                buckets[i] = fut.result() or []
             except Exception as e:
-                logger.warning(f"Pulse v2 adapter '{name}' raised: {e}")
-                buckets.append([])
+                logger.warning(
+                    f"Pulse v2 adapter '{adapters[i].name}' raised: {e}"
+                )
+                buckets[i] = []
 
     articles = merge(buckets)
     articles = _filter_by_journals(articles, enabled_journals)
