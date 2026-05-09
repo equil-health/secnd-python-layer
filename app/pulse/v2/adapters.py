@@ -33,22 +33,55 @@ LIMIT_PARAM_CANDIDATES = (
 )
 
 
-def _free_text_query(specialty: str, topics: list[str], mesh_terms: list[str] | None) -> str:
-    parts: list[str] = []
-    if specialty:
-        parts.append(specialty)
-    if topics:
-        parts.extend(topics)
-    if mesh_terms:
-        parts.extend(mesh_terms)
+def _dedup_preserve_order(items: list[str]) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
-    for p in parts:
-        k = p.lower().strip()
+    for p in items:
+        k = (p or "").lower().strip()
         if k and k not in seen:
             seen.add(k)
-            out.append(p)
-    return " ".join(out)
+            out.append(p.strip())
+    return out
+
+
+def _build_query(specialty: str, topics: list[str], mesh_terms: list[str] | None) -> str:
+    """Build a boolean query that won't shred into a 25-token AND.
+
+    Old behaviour was `" ".join([specialty, *topics, *mesh])` which most
+    upstream APIs treat as `term1 AND term2 AND …` — a query of 25 narrow
+    terms matches almost nothing. Now we quote each multi-word phrase and
+    OR them, anchored on the specialty:
+
+        specialty AND ("topic 1" OR "topic 2" OR …)
+
+    Single-word topics aren't quoted (no need). If only the specialty is
+    set, return it bare so we don't build "X AND ()".
+    """
+    spec = (specialty or "").strip()
+    phrases = _dedup_preserve_order([*(topics or []), *(mesh_terms or [])])
+
+    if not phrases:
+        return spec
+
+    def _wrap(p: str) -> str:
+        return f'"{p}"' if " " in p else p
+
+    or_clause = " OR ".join(_wrap(p) for p in phrases)
+    if not spec:
+        return f"({or_clause})"
+    return f'{spec} AND ({or_clause})'
+
+
+def _build_fallback_query(specialty: str) -> str:
+    """When the boolean query returns 0 records (some APIs reject PubMed-style
+    syntax, others just have no matches for the narrow OR set), retry with
+    the specialty alone — guaranteed broad enough to surface something."""
+    return (specialty or "").strip()
+
+
+# Kept for backward-compat with any direct importers; new call sites use _build_query.
+def _free_text_query(specialty: str, topics: list[str], mesh_terms: list[str] | None) -> str:
+    return _build_query(specialty, topics, mesh_terms)
 
 
 def _extract_records(resp: Any) -> list:
@@ -130,7 +163,8 @@ class _BaseTUAdapter:
             f"PULSE_DEBUG adapter[{self.name}]: search() entered, tool={self.tool_name}, "
             f"max_articles={max_articles}"
         )
-        query = _free_text_query(specialty, topics, mesh_terms)
+        primary_query = _build_query(specialty, topics, mesh_terms)
+        fallback_query = _build_fallback_query(specialty)
         schema = get_tool_schema(self.tool_name)
         if schema is None:
             logger.warning(
@@ -146,17 +180,35 @@ class _BaseTUAdapter:
             f"q_key={q_key!r}, l_key={l_key!r}"
         )
 
-        args: dict[str, Any] = {q_key: query, l_key: max_articles}
-        # Merge any tool-specific static args, but don't overwrite the keys
-        # we just chose (in case a subclass set the same key).
-        for k, v in self.extra_args.items():
-            args.setdefault(k, v)
+        def _invoke(query_str: str, label: str) -> tuple[Any, list]:
+            args: dict[str, Any] = {q_key: query_str, l_key: max_articles}
+            for k, v in self.extra_args.items():
+                args.setdefault(k, v)
+            logger.warning(
+                f"PULSE_DEBUG adapter[{self.name}]: {label} query='{query_str[:120]}'"
+            )
+            r = run_tool(self.tool_name, args)
+            recs = _extract_records(r)
+            return r, recs
 
-        resp = run_tool(self.tool_name, args)
-        records = _extract_records(resp)
+        resp, records = _invoke(primary_query, "PRIMARY")
+        query = primary_query
+
+        # Fallback: if the boolean query produced nothing AND the fallback
+        # would actually be different (i.e. specialty exists and there were
+        # topics), retry with specialty-only so we never ship an empty
+        # source bucket just because a syntax wasn't understood.
+        if not records and fallback_query and fallback_query != primary_query:
+            logger.warning(
+                f"PULSE_DEBUG adapter[{self.name}]: primary returned 0 — "
+                f"FALLBACK to specialty-only"
+            )
+            resp, records = _invoke(fallback_query, "FALLBACK")
+            query = fallback_query
+
         normalised = normalise_many(records, source=self.name)
         logger.warning(
-            f"PULSE_DEBUG adapter[{self.name}]: tool={self.tool_name} args_keys={list(args.keys())} "
+            f"PULSE_DEBUG adapter[{self.name}]: tool={self.tool_name} args_keys=[{q_key},{l_key},…] "
             f"query='{query[:80]}' → {len(records)} raw, {len(normalised)} normalised"
         )
         # If we got a response but extracted zero records, dump the inner
