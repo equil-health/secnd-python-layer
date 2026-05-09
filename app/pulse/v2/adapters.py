@@ -126,17 +126,25 @@ class _BaseTUAdapter:
         max_articles: int,
         skip_cache: bool = False,  # noqa: ARG002
     ) -> list[dict]:
+        logger.warning(
+            f"PULSE_DEBUG adapter[{self.name}]: search() entered, tool={self.tool_name}, "
+            f"max_articles={max_articles}"
+        )
         query = _free_text_query(specialty, topics, mesh_terms)
         schema = get_tool_schema(self.tool_name)
         if schema is None:
             logger.warning(
-                f"Pulse v2 [{self.name}]: tool '{self.tool_name}' not registered — skipping"
+                f"PULSE_DEBUG adapter[{self.name}]: tool '{self.tool_name}' not registered — skipping"
             )
             return []
 
         params = _schema_param_names(schema)
         q_key = _pick(params, QUERY_PARAM_CANDIDATES, "query")
         l_key = _pick(params, LIMIT_PARAM_CANDIDATES, "limit")
+        logger.warning(
+            f"PULSE_DEBUG adapter[{self.name}]: schema params={sorted(params)}, "
+            f"q_key={q_key!r}, l_key={l_key!r}"
+        )
 
         args: dict[str, Any] = {q_key: query, l_key: max_articles}
         # Merge any tool-specific static args, but don't overwrite the keys
@@ -147,8 +155,8 @@ class _BaseTUAdapter:
         resp = run_tool(self.tool_name, args)
         records = _extract_records(resp)
         normalised = normalise_many(records, source=self.name)
-        logger.info(
-            f"Pulse v2 [{self.name}] tool={self.tool_name} args_keys={list(args.keys())} "
+        logger.warning(
+            f"PULSE_DEBUG adapter[{self.name}]: tool={self.tool_name} args_keys={list(args.keys())} "
             f"query='{query[:80]}' → {len(records)} raw, {len(normalised)} normalised"
         )
         return normalised

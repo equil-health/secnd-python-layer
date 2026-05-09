@@ -72,9 +72,18 @@ def search(
         max_articles = settings.PULSE_MAX_ARTICLES_PER_DIGEST
 
     source_names = [s.strip() for s in settings.PULSE_V2_SOURCES.split(",") if s.strip()]
+    logger.warning(
+        f"PULSE_DEBUG search: ENTRY specialty={specialty!r} topics={topics} "
+        f"mesh={mesh_terms} journals={enabled_journals} max={max_articles} "
+        f"sources={source_names} version={settings.PULSE_VERSION}"
+    )
     adapters = build_adapters(source_names)
+    logger.warning(
+        f"PULSE_DEBUG search: built {len(adapters)} adapters: "
+        f"{[a.name for a in adapters]}"
+    )
     if not adapters:
-        logger.warning("Pulse v2: no adapters configured — returning []")
+        logger.warning("PULSE_DEBUG search: no adapters configured — returning []")
         return []
 
     # Over-fetch per source so the post-merge truncation has headroom
@@ -109,8 +118,17 @@ def search(
                 )
                 buckets[i] = []
 
+    per_bucket = {adapters[i].name: len(buckets[i]) for i in range(len(adapters))}
+    logger.warning(f"PULSE_DEBUG search: per-source buckets after fan-out: {per_bucket}")
+
     articles = merge(buckets)
+    logger.warning(f"PULSE_DEBUG search: after merge, {len(articles)} unique articles")
+    pre_filter = len(articles)
     articles = _filter_by_journals(articles, enabled_journals)
+    logger.warning(
+        f"PULSE_DEBUG search: after journal filter ({enabled_journals}): "
+        f"{pre_filter} -> {len(articles)}"
+    )
 
     for art in articles:
         art["evidence_grade"] = grade_evidence(art.get("pub_types", []))
@@ -119,8 +137,13 @@ def search(
     articles.sort(key=lambda a: a.get("relevance_score", 0), reverse=True)
     articles = articles[:max_articles]
 
-    logger.info(
-        f"Pulse v2: returning {len(articles)} articles "
-        f"(sources={source_names}, specialty={specialty})"
+    src_tally: dict[str, int] = {}
+    for a in articles:
+        for s in (a.get("sources") or [a.get("source", "")]):
+            if s:
+                src_tally[s] = src_tally.get(s, 0) + 1
+    logger.warning(
+        f"PULSE_DEBUG search: RETURNING {len(articles)} articles, "
+        f"src_tally={src_tally} (sources_cfg={source_names}, specialty={specialty})"
     )
     return articles

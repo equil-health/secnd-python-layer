@@ -49,6 +49,10 @@ def search(
     skip_cache: bool = False,
 ) -> list[dict]:
     version = (settings.PULSE_VERSION or "v1").strip().lower()
+    logger.warning(
+        f"PULSE_DEBUG router: ENTRY version={version!r} "
+        f"(raw settings.PULSE_VERSION={settings.PULSE_VERSION!r}) specialty={specialty!r}"
+    )
     kwargs = dict(
         specialty=specialty,
         topics=topics,
@@ -60,26 +64,33 @@ def search(
     )
 
     if version == "v2":
+        logger.warning("PULSE_DEBUG router: taking v2 branch")
         try:
             from .v2 import search as v2_search
 
             results = v2_search(**kwargs)
+            logger.warning(
+                f"PULSE_DEBUG router: v2 returned {len(results) if results else 0} articles"
+            )
             if results:
                 return results
-            logger.warning("Pulse v2 returned no results")
+            logger.warning("PULSE_DEBUG router: Pulse v2 returned no results")
         except Exception as e:
-            logger.error(f"Pulse v2 raised: {e}")
+            logger.error(f"PULSE_DEBUG router: Pulse v2 raised: {type(e).__name__}: {e!r}")
 
         if settings.PULSE_V2_FALLBACK_TO_V1:
-            logger.info("Pulse v2: falling back to v1")
+            logger.warning("PULSE_DEBUG router: FALLING BACK TO v1 (PubMed-only)")
             return _v1_scan(**kwargs)
+        logger.warning("PULSE_DEBUG router: v2 empty and fallback disabled — returning []")
         return []
 
     if version == "shadow":
+        logger.warning("PULSE_DEBUG router: taking shadow branch (v1 user-facing, v2 telemetry)")
         # Run v2 in a daemon thread so it can't slow down the digest task.
         t = threading.Thread(target=_shadow_run_v2, kwargs=kwargs, daemon=True)
         t.start()
         return _v1_scan(**kwargs)
 
     # Default: v1
+    logger.warning(f"PULSE_DEBUG router: taking v1 default branch (version={version!r})")
     return _v1_scan(**kwargs)

@@ -70,7 +70,13 @@ def generate_pulse_digest(self, user_id: str, skip_cache: bool = False):
         user_id: UUID of the user
         skip_cache: bypass PubMed search cache (True for manual "Generate Now")
     """
+    logger.warning(
+        f"PULSE_DEBUG task: generate_pulse_digest ENTRY user_id={user_id} "
+        f"skip_cache={skip_cache} PULSE_ENABLED={settings.PULSE_ENABLED} "
+        f"PULSE_VERSION={settings.PULSE_VERSION}"
+    )
     if not settings.PULSE_ENABLED:
+        logger.warning("PULSE_DEBUG task: skipped because PULSE_ENABLED=False")
         return {"status": "skipped", "reason": "pulse_disabled"}
 
     session = _get_sync_session()

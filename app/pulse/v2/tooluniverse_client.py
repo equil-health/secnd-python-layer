@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,7 @@ def get_tu():
     if _tu is not None:
         return _tu
     if _import_failed:
+        logger.warning("PULSE_DEBUG get_tu: previous import failed, returning None")
         return None
 
     with _lock:
@@ -32,21 +34,29 @@ def get_tu():
         if _import_failed:
             return None
         try:
+            logger.warning("PULSE_DEBUG get_tu: importing tooluniverse…")
             from tooluniverse import ToolUniverse  # type: ignore
 
+            logger.warning("PULSE_DEBUG get_tu: instantiating ToolUniverse()")
             _tu = ToolUniverse()
             # Some versions require explicit load; guard with hasattr to stay version-agnostic.
             if hasattr(_tu, "load_tools"):
                 try:
+                    logger.warning("PULSE_DEBUG get_tu: calling load_tools()")
                     _tu.load_tools()
+                    logger.warning("PULSE_DEBUG get_tu: load_tools() returned OK")
                 except Exception as e:  # pragma: no cover
-                    logger.warning(f"ToolUniverse.load_tools() failed (non-fatal): {e}")
-            logger.info("ToolUniverse client initialised")
+                    logger.warning(f"PULSE_DEBUG get_tu: load_tools() failed (non-fatal): {e!r}")
+            try:
+                n = len(getattr(_tu, "all_tools", []) or [])
+            except Exception:
+                n = -1
+            logger.warning(f"PULSE_DEBUG get_tu: ToolUniverse client initialised, all_tools={n}")
             return _tu
         except Exception as e:
             _import_failed = True
             logger.warning(
-                f"ToolUniverse not available — v2 adapters will return empty: {e}"
+                f"PULSE_DEBUG get_tu: ToolUniverse not available — v2 adapters will return empty: {e!r}"
             )
             return None
 
@@ -59,11 +69,26 @@ def run_tool(name: str, arguments: dict[str, Any]) -> Any:
     """
     tu = get_tu()
     if tu is None:
+        logger.warning(f"PULSE_DEBUG run_tool[{name}]: tu is None, returning None")
         return None
     try:
-        return tu.run({"name": name, "arguments": arguments})
+        arg_keys = list(arguments.keys()) if isinstance(arguments, dict) else type(arguments).__name__
+        logger.warning(f"PULSE_DEBUG run_tool[{name}]: invoking with arg_keys={arg_keys}")
+        t0 = time.monotonic()
+        resp = tu.run({"name": name, "arguments": arguments})
+        dt = time.monotonic() - t0
+        if resp is None:
+            shape = "None"
+        elif isinstance(resp, list):
+            shape = f"list(len={len(resp)})"
+        elif isinstance(resp, dict):
+            shape = f"dict(keys={list(resp.keys())[:8]})"
+        else:
+            shape = type(resp).__name__
+        logger.warning(f"PULSE_DEBUG run_tool[{name}]: returned in {dt:.2f}s, shape={shape}")
+        return resp
     except Exception as e:
-        logger.warning(f"ToolUniverse tool '{name}' failed: {e}")
+        logger.warning(f"PULSE_DEBUG run_tool[{name}]: raised {type(e).__name__}: {e!r}")
         return None
 
 
@@ -74,11 +99,17 @@ def get_tool_schema(name: str) -> dict | None:
     runtime (instead of guessing 'query' vs 'search_term' vs 'keywords')."""
     tu = get_tu()
     if tu is None:
+        logger.warning(f"PULSE_DEBUG get_tool_schema[{name}]: tu is None")
         return None
     try:
-        for t in getattr(tu, "all_tools", []) or []:
+        all_tools = getattr(tu, "all_tools", []) or []
+        for t in all_tools:
             if isinstance(t, dict) and t.get("name") == name:
+                logger.warning(f"PULSE_DEBUG get_tool_schema[{name}]: FOUND")
                 return t
-    except Exception:
-        pass
+        logger.warning(
+            f"PULSE_DEBUG get_tool_schema[{name}]: NOT FOUND in registry of {len(all_tools)} tools"
+        )
+    except Exception as e:
+        logger.warning(f"PULSE_DEBUG get_tool_schema[{name}]: raised {type(e).__name__}: {e!r}")
     return None
