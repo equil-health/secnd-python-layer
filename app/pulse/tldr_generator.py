@@ -36,7 +36,17 @@ def generate_tldr(article: dict) -> str:
     )
 
     try:
-        return call_gemini(prompt, max_tokens=512, temperature=0.2)
+        # disable_thinking: Flash 2.5 spends thinking tokens out of the same
+        # budget, which truncated 3-sentence summaries mid-sentence. We don't
+        # need reasoning for a summarisation task.
+        return call_gemini(
+            prompt,
+            max_tokens=768,
+            temperature=0.2,
+            disable_thinking=True,
+            _module="pulse",
+            _operation="tldr",
+        )
     except Exception as e:
         logger.error(f"TL;DR generation failed for PMID {article.get('pmid', '?')}: {e}")
         return f"Summary generation failed: {str(e)[:100]}"

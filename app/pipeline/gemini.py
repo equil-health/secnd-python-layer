@@ -9,10 +9,14 @@ from ..usage_tracker import tracker
 
 def call_gemini(prompt: str, max_tokens: int = 2048, temperature: float = 0.3,
                 _module: str = "pipeline", _operation: str = "call_gemini",
-                json_mode: bool = False) -> str:
+                json_mode: bool = False, disable_thinking: bool = False) -> str:
     """Call Gemini 2.5 Flash via Google AI Studio REST API.
 
     5 retries with aggressive backoff for rate limits.
+
+    disable_thinking: turn off Flash 2.5's internal thinking budget. Thinking
+    tokens are deducted from maxOutputTokens *before* the visible response,
+    which can truncate short outputs mid-sentence. Set True for summaries.
     """
     url = (
         f"https://generativelanguage.googleapis.com/v1beta/models/"
@@ -23,6 +27,8 @@ def call_gemini(prompt: str, max_tokens: int = 2048, temperature: float = 0.3,
         "maxOutputTokens": max_tokens,
         "temperature": temperature,
     }
+    if disable_thinking:
+        gen_config["thinkingConfig"] = {"thinkingBudget": 0}
     if json_mode:
         gen_config["responseMimeType"] = "application/json"
     payload = {
