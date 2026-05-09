@@ -133,30 +133,71 @@ def generate_pulse_digest(self, user_id: str, skip_cache: bool = False):
         from .tldr_generator import generate_batch_tldrs
         articles = generate_batch_tldrs(articles)
 
-        # Save articles to DB
+        # Save articles to DB. Coerce every scalar column to its expected
+        # primitive type — multi-source TU records sometimes surface dicts
+        # ({"value": "..."}) where strings are expected, which crashes
+        # psycopg2's adapter ("can't adapt type 'dict'").
+        def _s(v) -> str:
+            if v is None:
+                return ""
+            if isinstance(v, str):
+                return v
+            if isinstance(v, (int, float)):
+                return str(v)
+            if isinstance(v, dict):
+                for k in ("value", "#text", "text", "name", "title", "url"):
+                    inner = v.get(k)
+                    if isinstance(inner, str):
+                        return inner
+                return ""
+            if isinstance(v, list):
+                for item in v:
+                    s = _s(item)
+                    if s:
+                        return s
+                return ""
+            return str(v)
+
+        def _author_list(v) -> list[str]:
+            out: list[str] = []
+            if not isinstance(v, list):
+                return out
+            for a in v:
+                s = _s(a)
+                if s:
+                    out.append(s)
+            return out
+
+        def _float(v) -> float:
+            try:
+                return float(v) if v is not None else 0.0
+            except (TypeError, ValueError):
+                return 0.0
+
         for article_data in articles:
             pub_date = None
-            if article_data.get("published_date"):
+            pd_str = _s(article_data.get("published_date"))
+            if pd_str:
                 try:
-                    pub_date = datetime.strptime(article_data["published_date"], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                    pub_date = datetime.strptime(pd_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
                 except (ValueError, TypeError):
                     pub_date = None
 
             article = PulseArticle(
                 digest_id=digest.id,
-                title=article_data.get("title", ""),
-                authors=article_data.get("authors", []),
-                journal=article_data.get("journal", ""),
-                doi=article_data.get("doi", ""),
-                pmid=article_data.get("pmid", ""),
+                title=_s(article_data.get("title")),
+                authors=_author_list(article_data.get("authors")),
+                journal=_s(article_data.get("journal")),
+                doi=_s(article_data.get("doi")),
+                pmid=_s(article_data.get("pmid")),
                 published_date=pub_date,
-                abstract=article_data.get("abstract", ""),
-                article_url=article_data.get("article_url", ""),
-                tldr=article_data.get("tldr", ""),
-                evidence_grade=article_data.get("evidence_grade", ""),
-                relevance_score=article_data.get("relevance_score", 0),
-                source=article_data.get("source") or "pubmed",
-                access_strategy=article_data.get("access_strategy", "proxy_via_pubmed"),
+                abstract=_s(article_data.get("abstract")),
+                article_url=_s(article_data.get("article_url")),
+                tldr=_s(article_data.get("tldr")),
+                evidence_grade=_s(article_data.get("evidence_grade")),
+                relevance_score=_float(article_data.get("relevance_score")),
+                source=_s(article_data.get("source")) or "pubmed",
+                access_strategy=_s(article_data.get("access_strategy")) or "proxy_via_pubmed",
             )
             session.add(article)
 

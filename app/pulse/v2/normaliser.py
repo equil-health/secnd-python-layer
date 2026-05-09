@@ -50,10 +50,36 @@ def _clean_doi(raw: Any) -> str:
     return m.group(0) if m else ""
 
 
-def _strip_html(text: Any) -> str:
-    if not text:
+def _coerce_str(val: Any) -> str:
+    """Coerce a TU field to a string. Some tools return dicts like
+    {'value': 'X'} or {'#text': 'X'} for what should be a scalar — extract
+    the inner text before stringifying so we never persist a Python repr."""
+    if val is None:
         return ""
-    s = str(text)
+    if isinstance(val, str):
+        return val
+    if isinstance(val, (int, float)):
+        return str(val)
+    if isinstance(val, dict):
+        for key in ("value", "#text", "text", "name", "title", "url", "href", "$"):
+            inner = val.get(key)
+            if isinstance(inner, str) and inner:
+                return inner
+        # No recognised inner key — return empty rather than the dict's repr.
+        return ""
+    if isinstance(val, list):
+        for item in val:
+            s = _coerce_str(item)
+            if s:
+                return s
+        return ""
+    return str(val)
+
+
+def _strip_html(text: Any) -> str:
+    s = _coerce_str(text)
+    if not s:
+        return ""
     s = re.sub(r"<[^>]+>", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
     return s
@@ -94,8 +120,8 @@ def normalise(record: dict, *, source: str) -> dict | None:
         return None
 
     title = _strip_html(record.get("title") or record.get("name") or "")
-    doi = _clean_doi(record.get("doi") or record.get("DOI"))
-    pmid = str(record.get("pmid") or record.get("PMID") or "").strip()
+    doi = _clean_doi(_coerce_str(record.get("doi") or record.get("DOI")))
+    pmid = _coerce_str(record.get("pmid") or record.get("PMID")).strip()
     if not title and not (doi or pmid):
         return None
 
@@ -119,14 +145,16 @@ def normalise(record: dict, *, source: str) -> dict | None:
         or record.get("date")
         or record.get("year")
     )
-    pub_types = [str(p) for p in _as_list(record.get("pub_types") or record.get("type")) if p]
+    pub_types = [
+        _coerce_str(p) for p in _as_list(record.get("pub_types") or record.get("type"))
+        if _coerce_str(p)
+    ]
 
-    article_url = (
+    article_url = _coerce_str(
         record.get("article_url")
         or record.get("url")
         or record.get("link")
-        or _build_url(pmid, doi)
-    )
+    ) or _build_url(pmid, doi)
 
     return {
         "pmid": pmid,
