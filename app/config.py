@@ -61,6 +61,13 @@ class Settings(BaseSettings):
     PULSE_DEFAULT_FREQUENCY: str = "weekly"
     PULSE_SCAN_DAYS_BACK: int = 7
 
+    # Pulse v2 — pluggable multi-source search via ToolUniverse
+    # Default keeps v1 behaviour. Flip PULSE_VERSION to "v2" or "shadow" to opt in.
+    PULSE_VERSION: str = "v1"  # "v1" | "v2" | "shadow"
+    PULSE_V2_SOURCES: str = "pubmed,europe_pmc,openalex"  # comma-separated, order = priority
+    PULSE_V2_MAX_PARALLEL: int = 4
+    PULSE_V2_FALLBACK_TO_V1: bool = True
+
     # Breaking — Daily Headline Pipeline
     BREAKING_ENABLED: bool = True
     BREAKING_SPECIALTIES_COUNT: int = 10

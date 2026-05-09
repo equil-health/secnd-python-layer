@@ -165,3 +165,21 @@ async def list_specialties(user: User = Depends(get_current_user)):
         SpecialtyInfo(name=name, mesh_terms=terms)
         for name, terms in sorted(SPECIALTY_MESH.items())
     ]
+
+
+@router.get("/version")
+async def pulse_version(user: User = Depends(get_current_user)):
+    """Report the active Pulse search backend. Useful for debugging which path
+    actually ran when v1/v2/shadow are in play."""
+    info: dict = {
+        "version": settings.PULSE_VERSION,
+        "v2_sources": [s.strip() for s in settings.PULSE_V2_SOURCES.split(",") if s.strip()],
+        "v2_fallback_to_v1": settings.PULSE_V2_FALLBACK_TO_V1,
+        "tooluniverse_available": False,
+    }
+    try:
+        from ..pulse.v2.tooluniverse_client import get_tu
+        info["tooluniverse_available"] = get_tu() is not None
+    except Exception as e:
+        info["tooluniverse_error"] = str(e)[:200]
+    return info

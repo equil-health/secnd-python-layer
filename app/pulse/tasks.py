@@ -110,8 +110,8 @@ def generate_pulse_digest(self, user_id: str, skip_cache: bool = False):
         session.add(digest)
         session.commit()
 
-        # Scan for articles
-        from .scanner import scan_for_articles
+        # Scan for articles — routed by PULSE_VERSION (v1 legacy | v2 ToolUniverse | shadow)
+        from .router import search as scan_for_articles
         articles = scan_for_articles(
             specialty=pref.specialty,
             topics=pref.topics or [],
@@ -155,7 +155,7 @@ def generate_pulse_digest(self, user_id: str, skip_cache: bool = False):
                 tldr=article_data.get("tldr", ""),
                 evidence_grade=article_data.get("evidence_grade", ""),
                 relevance_score=article_data.get("relevance_score", 0),
-                source="pubmed",
+                source=article_data.get("source") or "pubmed",
                 access_strategy=article_data.get("access_strategy", "proxy_via_pubmed"),
             )
             session.add(article)
