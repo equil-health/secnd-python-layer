@@ -65,3 +65,20 @@ def run_tool(name: str, arguments: dict[str, Any]) -> Any:
     except Exception as e:
         logger.warning(f"ToolUniverse tool '{name}' failed: {e}")
         return None
+
+
+def get_tool_schema(name: str) -> dict | None:
+    """Return the registered schema dict for a tool, or None if unknown.
+
+    Used by adapters to discover the actual parameter names of a tool at
+    runtime (instead of guessing 'query' vs 'search_term' vs 'keywords')."""
+    tu = get_tu()
+    if tu is None:
+        return None
+    try:
+        for t in getattr(tu, "all_tools", []) or []:
+            if isinstance(t, dict) and t.get("name") == name:
+                return t
+    except Exception:
+        pass
+    return None
