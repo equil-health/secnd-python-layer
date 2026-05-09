@@ -86,6 +86,24 @@ def run_tool(name: str, arguments: dict[str, Any]) -> Any:
         else:
             shape = type(resp).__name__
         logger.warning(f"PULSE_DEBUG run_tool[{name}]: returned in {dt:.2f}s, shape={shape}")
+        # If the response looks like an error envelope (status != success,
+        # or contains an `error` key, or `data` is empty), dump it so we can
+        # see why OpenAlex / SemanticScholar etc. return 0 records.
+        if isinstance(resp, dict):
+            status = resp.get("status")
+            err = resp.get("error")
+            data = resp.get("data")
+            data_empty = data is None or (hasattr(data, "__len__") and len(data) == 0)
+            if err or (status and str(status).lower() not in ("success", "ok", "200")) or data_empty:
+                preview = {
+                    k: (str(v)[:300] if not isinstance(v, (dict, list)) else v)
+                    for k, v in list(resp.items())[:6]
+                }
+                logger.warning(
+                    f"PULSE_DEBUG run_tool[{name}]: SUSPICIOUS response "
+                    f"status={status!r} error={err!r} data_empty={data_empty} "
+                    f"preview={preview}"
+                )
         return resp
     except Exception as e:
         logger.warning(f"PULSE_DEBUG run_tool[{name}]: raised {type(e).__name__}: {e!r}")
